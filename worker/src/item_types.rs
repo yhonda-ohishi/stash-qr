@@ -6,7 +6,7 @@ use worker::*;
 
 use crate::db::{self, NOW, opt_text, text};
 use crate::id::{ROW_ID_LEN, new_id};
-use crate::{error, json, read_object};
+use crate::{Ctx, error, json, read_object};
 
 #[derive(Deserialize)]
 struct Row {
@@ -52,7 +52,7 @@ struct ListQuery {
     q: Option<String>,
 }
 
-pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn list(req: Request, ctx: Ctx) -> Result<Response> {
     let q = req.query::<ListQuery>()?.q.unwrap_or_default();
     let d1 = db::db(&ctx)?;
     let rows = if q.trim().is_empty() {
@@ -82,7 +82,7 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
     let body = match read_object(&mut req).await {
         Ok(b) => b,
         Err(r) => return r,

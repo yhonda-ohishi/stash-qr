@@ -11,7 +11,7 @@ use worker::*;
 
 use crate::db::{self, NOW, int, opt_text, text};
 use crate::id::{CONTAINER_ID_LEN, ROW_ID_LEN, new_id, normalize_container_id};
-use crate::{error, json, read_object};
+use crate::{Ctx, error, json, read_object};
 
 /// 親をたどる深さの上限。壊れたデータで CTE が止まらなくなるのを防ぐ保険。
 const MAX_DEPTH: i64 = 64;
@@ -30,7 +30,7 @@ struct Container {
 const COLS: &str = "id, parent_id, kind, name, memo, created_at, updated_at";
 
 /// パスの `:id` を正規化する。形が違う ID は存在しないのと同じ扱い (404)。
-fn path_id(ctx: &RouteContext<()>) -> Option<String> {
+fn path_id(ctx: &Ctx) -> Option<String> {
     ctx.param("id").and_then(|s| normalize_container_id(s))
 }
 
@@ -75,7 +75,7 @@ async fn load(d1: &D1Database, id: &str) -> Result<Option<Container>> {
 // POST /api/containers
 // ---------------------------------------------------------------------------
 
-pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
     let body = match read_object(&mut req).await {
         Ok(b) => b,
         Err(r) => return r,
@@ -170,7 +170,7 @@ struct Count {
     n: i64,
 }
 
-pub async fn get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
     let Some(id) = path_id(&ctx) else {
         return error(404, "container not found");
     };
@@ -250,7 +250,7 @@ pub async fn get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
 // PATCH /api/containers/:id
 // ---------------------------------------------------------------------------
 
-pub async fn patch(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn patch(mut req: Request, ctx: Ctx) -> Result<Response> {
     let Some(id) = path_id(&ctx) else {
         return error(404, "container not found");
     };
@@ -314,7 +314,7 @@ pub async fn patch(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
 // POST /api/containers/:id/move   { parent_id }
 // ---------------------------------------------------------------------------
 
-pub async fn move_to(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn move_to(mut req: Request, ctx: Ctx) -> Result<Response> {
     let Some(id) = path_id(&ctx) else {
         return error(404, "container not found");
     };
@@ -337,8 +337,8 @@ pub async fn move_to(mut req: Request, ctx: RouteContext<()>) -> Result<Response
     // batch は 1 トランザクションなので、判定と更新の間に割り込まれない。
     let record = d1
         .prepare(format!(
-            "INSERT INTO movements (id, at, kind, container_id, from_id, to_id)
-             SELECT ?1, {NOW}, 'container_move', c.id, c.parent_id, ?3
+            "INSERT INTO movements (id, at, actor, kind, container_id, from_id, to_id)
+             SELECT ?1, {NOW}, ?4, 'container_move', c.id, c.parent_id, ?3
              FROM containers c
              WHERE c.id = ?2
                AND (?3 IS NULL OR EXISTS (SELECT 1 FROM containers WHERE id = ?3))
@@ -352,7 +352,12 @@ pub async fn move_to(mut req: Request, ctx: RouteContext<()>) -> Result<Response
                  SELECT 1 FROM a WHERE a.id = ?2
                )"
         ))
-        .bind(&[text(&movement_id), text(&id), opt_text(to.as_deref())])?;
+        .bind(&[
+            text(&movement_id),
+            text(&id),
+            opt_text(to.as_deref()),
+            text(&ctx.data.0),
+        ])?;
     let apply = d1
         .prepare(format!(
             "UPDATE containers SET parent_id = ?3, updated_at = {NOW}
@@ -382,7 +387,7 @@ pub async fn move_to(mut req: Request, ctx: RouteContext<()>) -> Result<Response
 // DELETE /api/containers/:id
 // ---------------------------------------------------------------------------
 
-pub async fn delete(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn delete(_req: Request, ctx: Ctx) -> Result<Response> {
     let Some(id) = path_id(&ctx) else {
         return error(404, "container not found");
     };
@@ -419,7 +424,7 @@ struct Qty {
     qty: i64,
 }
 
-pub async fn stock_delta(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+pub async fn stock_delta(mut req: Request, ctx: Ctx) -> Result<Response> {
     let Some(id) = path_id(&ctx) else {
         return error(404, "container not found");
     };
@@ -450,14 +455,15 @@ pub async fn stock_delta(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
         text(item_type_id),
         int(delta),
         opt_text(note),
+        text(&ctx.data.0),
     ];
     // 1 文目: コンテナと数量管理の品目が存在し、出した後も 0 以上になるときだけ記録する。
     // 2 文目: 記録できたときだけ本数を足す (行が無ければ作る)。
     // 3 文目: 0 本になった行は消す (中身一覧に 0 本を並べない)。
     let record = d1
         .prepare(format!(
-            "INSERT INTO movements (id, at, kind, container_id, item_type_id, qty_delta, note)
-             SELECT ?1, {NOW}, ?2, ?3, ?4, ?5, ?6
+            "INSERT INTO movements (id, at, actor, kind, container_id, item_type_id, qty_delta, note)
+             SELECT ?1, {NOW}, ?7, ?2, ?3, ?4, ?5, ?6
              WHERE EXISTS (SELECT 1 FROM containers WHERE id = ?3)
                AND EXISTS (SELECT 1 FROM item_types WHERE id = ?4 AND tracking = 'quantity')
                AND COALESCE((SELECT qty FROM stock WHERE container_id = ?3 AND item_type_id = ?4), 0) + ?5 >= 0"

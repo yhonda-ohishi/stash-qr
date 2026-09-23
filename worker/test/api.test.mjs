@@ -1,19 +1,33 @@
 // API の結合テスト。空のローカル D1 に migration を当て、wrangler dev を立てて叩く。
+// Cloudflare Access の代わりに、テスト内で RSA 鍵を作って偽の JWKS を立て、
+// 自分で署名した JWT を Cf-Access-Jwt-Assertion に載せる (署名検証は本物の WebCrypto)。
 // 実行: npm test (先に cargo test、続けてこれ)。
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 
 const WRANGLER = join(import.meta.dirname, "..", "node_modules", ".bin", "wrangler");
 const CWD = join(import.meta.dirname, "..");
+const AUD = "test-aud";
+const EMAIL = "me@example.com";
 
-let base;
-let dev;
+let base; // Access 設定あり
+let bareBase; // Access 設定なし (fail closed の確認用)
+let issuer;
 let state;
+let jwks;
+const devs = [];
+
+// JWKS に載せる鍵と、載せない鍵 (なりすまし用)
+const good = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const rogue = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const KID = "test-kid";
 
 async function freePort() {
   return new Promise((resolve) => {
@@ -24,47 +38,79 @@ async function freePort() {
   });
 }
 
-before(async () => {
-  state = mkdtempSync(join(tmpdir(), "stash-qr-test-"));
-  execFileSync(WRANGLER, ["d1", "migrations", "apply", "DB", "--local", "--persist-to", state], {
-    cwd: CWD,
-    stdio: "ignore",
-  });
+const b64url = (buf) => Buffer.from(buf).toString("base64url");
+
+function jwt(claims = {}, { key = good.privateKey, kid = KID, alg = "RS256" } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64url(JSON.stringify({ alg, kid, typ: "JWT" }));
+  const payload = b64url(
+    JSON.stringify({ iss: issuer, aud: [AUD], iat: now, exp: now + 600, email: EMAIL, ...claims }),
+  );
+  const sig = sign("sha256", Buffer.from(`${header}.${payload}`), key);
+  return `${header}.${payload}.${b64url(sig)}`;
+}
+
+async function startDev(vars) {
   const port = await freePort();
-  base = `http://127.0.0.1:${port}`;
+  const url = `http://127.0.0.1:${port}`;
+  const varArgs = Object.entries(vars).flatMap(([k, v]) => ["--var", `${k}:${v}`]);
   // 自分で起こしたプロセスグループだけを後で止める (名前で kill しない)。
-  dev = spawn(WRANGLER, ["dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", state], {
-    cwd: CWD,
-    detached: true,
-    stdio: "ignore",
-  });
+  const dev = spawn(
+    WRANGLER,
+    ["dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", state, ...varArgs],
+    { cwd: CWD, detached: true, stdio: "ignore" },
+  );
+  devs.push(dev);
   for (let i = 0; i < 600; i++) {
     try {
-      await fetch(`${base}/api/item-types`);
-      return;
+      await fetch(`${url}/api/item-types`);
+      return url;
     } catch {
       await new Promise((r) => setTimeout(r, 500));
     }
   }
   throw new Error("wrangler dev did not come up");
+}
+
+before(async () => {
+  const pub = good.publicKey.export({ format: "jwk" });
+  const jwksPort = await freePort();
+  issuer = `http://127.0.0.1:${jwksPort}`;
+  jwks = createHttpServer((req, res) => {
+    if (req.url !== "/cdn-cgi/access/certs") return res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ keys: [{ ...pub, kid: KID, alg: "RS256", use: "sig" }] }));
+  }).listen(jwksPort, "127.0.0.1");
+
+  state = mkdtempSync(join(tmpdir(), "stash-qr-test-"));
+  execFileSync(WRANGLER, ["d1", "migrations", "apply", "DB", "--local", "--persist-to", state], {
+    cwd: CWD,
+    stdio: "ignore",
+  });
+  base = await startDev({ ACCESS_ISSUER: issuer, ACCESS_AUD: AUD });
+  bareBase = await startDev({});
 });
 
 after(() => {
-  if (dev?.pid) process.kill(-dev.pid, "SIGTERM");
+  for (const d of devs) if (d.pid) process.kill(-d.pid, "SIGTERM");
+  jwks?.close();
   if (state) rmSync(state, { recursive: true, force: true });
 });
 
-async function call(method, path, body) {
-  const res = await fetch(`${base}${path}`, {
+async function call(method, path, body, { token = jwt(), url = base } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (token !== null) headers["cf-access-jwt-assertion"] = token;
+  const res = await fetch(`${url}${path}`, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-const post = (p, b) => call("POST", p, b);
+const post = (p, b, opts) => call("POST", p, b, opts);
 
 // API に出していない表 (movements) を確かめるため、ローカル D1 を直接読む。
 function sql(query) {
@@ -134,10 +180,10 @@ describe("containers", () => {
 
     // 失敗した 3 回は何も残さず、成功した 2 回だけが移動元・移動先付きで残る
     assert.deepEqual(
-      sql(`SELECT container_id, from_id, to_id FROM movements WHERE kind = 'container_move' AND container_id IN ('${a.body.id}', '${b.body.id}') ORDER BY at`),
+      sql(`SELECT actor, container_id, from_id, to_id FROM movements WHERE kind = 'container_move' AND container_id IN ('${a.body.id}', '${b.body.id}') ORDER BY at`),
       [
-        { container_id: b.body.id, from_id: a.body.id, to_id: other.body.id },
-        { container_id: b.body.id, from_id: other.body.id, to_id: null },
+        { actor: EMAIL, container_id: b.body.id, from_id: a.body.id, to_id: other.body.id },
+        { actor: EMAIL, container_id: b.body.id, from_id: other.body.id, to_id: null },
       ],
     );
   });
@@ -208,5 +254,55 @@ describe("item types", () => {
     assert.ok(found.body.item_types.some((t) => t.id === a.body.id));
     const pct = await call("GET", "/api/item-types?q=%25");
     assert.deepEqual(pct.body.item_types, [], "% は文字として扱う");
+  });
+});
+
+describe("Cloudflare Access", () => {
+  const status = async (token, url) => (await call("GET", "/api/item-types", undefined, { token, url })).status;
+
+  test("正しいトークンだけ通す", async () => {
+    assert.equal(await status(jwt()), 200);
+    assert.equal(await status(jwt({ aud: AUD })), 200, "aud は文字列でもよい");
+  });
+
+  test("ヘッダ無し・壊れたトークンは 401", async () => {
+    assert.equal(await status(null), 401);
+    assert.equal(await status("garbage"), 401);
+    assert.equal(await status("a.b.c"), 401);
+  });
+
+  test("署名・鍵・アルゴリズムが違えば 401", async () => {
+    assert.equal(await status(jwt({}, { key: rogue.privateKey })), 401, "JWKS に無い鍵で kid だけ詐称");
+    assert.equal(await status(jwt({}, { kid: "unknown" })), 401, "知らない kid");
+    const t = jwt();
+    const [h, p] = t.split(".");
+    assert.equal(await status(`${h}.${p}.`), 401, "署名を空に");
+    const none = `${b64url(JSON.stringify({ alg: "none", kid: KID }))}.${p}.`;
+    assert.equal(await status(none), 401, "alg=none");
+    const tampered = b64url(JSON.stringify({ ...JSON.parse(Buffer.from(p, "base64url")), email: "evil@example.com" }));
+    assert.equal(await status(`${h}.${tampered}.${t.split(".")[2]}`), 401, "中身の書き換え");
+  });
+
+  test("claim が合わなければ 401", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    assert.equal(await status(jwt({ iss: "https://other.cloudflareaccess.com" })), 401);
+    assert.equal(await status(jwt({ aud: ["other-aud"] })), 401);
+    assert.equal(await status(jwt({ exp: now - 120 })), 401, "期限切れ");
+    assert.equal(await status(jwt({ nbf: now + 600 })), 401, "まだ有効でない");
+    assert.equal(await status(jwt({ email: "" })), 401, "持ち主が無い");
+  });
+
+  test("サービストークン (Android) は common_name を actor に残す", async () => {
+    const token = jwt({ email: undefined, common_name: "android.access" });
+    const box = await post("/api/containers", { kind: "box" }, { token });
+    assert.equal(box.status, 201);
+    const it = await post("/api/item-types", { category: "cable", name: "svc", tracking: "quantity" }, { token });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: it.body.id, delta: 1 }, { token });
+    assert.deepEqual(sql(`SELECT actor FROM movements WHERE container_id = '${box.body.id}'`), [{ actor: "android.access" }]);
+  });
+
+  test("ACCESS_* が未設定なら正しいトークンでも 503 (fail closed)", async () => {
+    assert.equal(await status(jwt(), bareBase), 503);
+    assert.equal(await status(null, bareBase), 503);
   });
 });
