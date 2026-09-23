@@ -1,6 +1,7 @@
 import { Camera } from "lucide-preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { listContainers, search, type ContainerListItem, type SearchResult } from "../api";
+import { installState, onInstallChange, promptInstall } from "../install";
 import { counts, discardUnsent, onPendingChange, resendAll } from "../pending";
 import { appPath } from "../qr";
 import { QrScanner } from "../QrScanner";
@@ -56,6 +57,8 @@ export function Home({ query }: ScreenProps) {
   return (
     <main>
       <h1>stash-qr</h1>
+
+      <InstallButton />
 
       <section>
         <a class="button primary shoot" href="/app/shoot">
@@ -113,6 +116,21 @@ export function Home({ query }: ScreenProps) {
 
       <PendingPanel />
     </main>
+  );
+}
+
+function InstallButton() {
+  const [state, setState] = useState(installState());
+
+  useEffect(() => onInstallChange(() => setState(installState())), []);
+
+  if (state !== "available") return null;
+  return (
+    <section>
+      <button class="primary" onClick={() => promptInstall()}>
+        アプリとしてインストール
+      </button>
+    </section>
   );
 }
 
