@@ -48,8 +48,11 @@ export type AssetRow = {
   draft: AssetDraft;
 };
 
-/** コンテナ自体の種別・名前の編集行。「撮影して登録」(`?new=1`) のときだけ画面に出す。 */
+/** コンテナ自体の種別・名前の編集行。判定画面には常に出す。 */
 export type ContainerRow = { kind: string; name: string };
+
+/** 今のコンテナの種別・名前 (`GET /api/containers/:id` の `container`)。initialRows/buildFinal に渡す。 */
+export type CurrentContainer = { kind: string; name: string | null };
 
 export type EditState = { stock: StockRow[]; assets: AssetRow[]; container?: ContainerRow };
 
@@ -64,9 +67,12 @@ export function proposalContainer(proposal: unknown): JudgedContainer | null {
   return { kind, name: typeof name === "string" ? name : null };
 }
 
-/** 判定の応答から編集リストの初期値を作る。`withContainer` なら種別・名前の編集行も添える
- * (「撮影して登録」で作ったばかりの仮コンテナのとき)。初期値は AI の提案、無ければ bag / 空。 */
-export function initialRows(r: JudgeResult, opts: { withContainer?: boolean } = {}): EditState {
+/** 判定の応答から編集リストの初期値を作る。種別・名前の編集行は常に添える。
+ * `fresh` (新規 `?new=1` か提案からの再開 `?resume=`) なら AI の提案 (proposal.container) が初期値、
+ * 無ければ bag / 空。それ以外 (既存コンテナの撮り直し) は `current` を基準にする:
+ * 種別は current のまま (AI の種別で上書きしない)、名前は current にあればそのまま、空なら AI の提案。
+ * `current` が無ければ `fresh` を渡さなくても fresh 扱いにする。 */
+export function initialRows(r: JudgeResult, opts: { current?: CurrentContainer; fresh?: boolean } = {}): EditState {
   const currentQty = new Map(r.current.stock.map((s) => [s.item_type_id, s.qty]));
   const byId = new Map(r.current.stock.map((s) => [s.item_type_id, s]));
   const proposed = new Set<string>();
@@ -109,9 +115,13 @@ export function initialRows(r: JudgeResult, opts: { withContainer?: boolean } = 
       serial: a.serial ?? "",
     },
   }));
-  if (!opts.withContainer) return { stock, assets };
   const containerProposal = proposalContainer(r.proposal);
-  return { stock, assets, container: { kind: containerProposal?.kind ?? "bag", name: containerProposal?.name ?? "" } };
+  const current = opts.current;
+  const fresh = !current || !!opts.fresh;
+  const container: ContainerRow = fresh
+    ? { kind: containerProposal?.kind ?? "bag", name: containerProposal?.name ?? "" }
+    : { kind: current.kind, name: current.name?.trim() ? current.name : (containerProposal?.name ?? "") };
+  return { stock, assets, container };
 }
 
 function currentRow(s: StockLine): StockRow {
@@ -156,8 +166,13 @@ const fold = (s: string) => s.trim().toLowerCase();
 /**
  * 編集リストを確定の本文にする。worker が 400/422 で弾くもの (空の名前・本数の不正・
  * 同じ品目の二重指定・同じ個体の二重選択) は送る前に画面で止める。
+ *
+ * `fresh` (新規・再開) なら final.container を常に載せる。それ以外 (既存コンテナの撮り直し)
+ * は編集後の kind・name (trim 後) が `current` と変わったときだけ載せる (同じ値での書き換えと
+ * updated_at の空回り、撮影中に別画面で変えた名前を古い値で戻すのを避ける)。`current` が無ければ
+ * `fresh` を渡さなくても fresh 扱いにする (initialRows と同じ規則)。
  */
-export function buildFinal(state: EditState): BuildResult {
+export function buildFinal(state: EditState, opts: { current?: CurrentContainer; fresh?: boolean } = {}): BuildResult {
   const stock: ConfirmStockLine[] = [];
   const seen = new Map<string, string>(); // 品目の鍵 → 表示名
   const dup = (keys: string[], label: string): string | null => {
@@ -218,7 +233,10 @@ export function buildFinal(state: EditState): BuildResult {
     const kind = state.container.kind.trim();
     if (!kind) return { ok: false, error: "コンテナの種別を入れてください" };
     const name = state.container.name.trim();
-    final.container = name ? { kind, name } : { kind };
+    const current = opts.current;
+    const fresh = !current || !!opts.fresh;
+    const changed = fresh || kind !== current.kind || name !== (current.name ?? "").trim();
+    if (changed) final.container = name ? { kind, name } : { kind };
   }
   return { ok: true, final };
 }

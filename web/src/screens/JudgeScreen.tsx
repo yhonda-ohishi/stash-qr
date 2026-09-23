@@ -1,13 +1,18 @@
 // 撮影 → AI 判定 → 編集 → 確定。AI の判定は提案で、ユーザーが直した一覧で確定する。
 // 確定はコンテナ直下の本数を一覧とぴったり同じにするので、今ある品目も行として出す (judge.ts)。
 //
-// `?new=1` (Home/ContainerScreen の「撮影して登録」= ShootScreen 経由) のときは:
+// 編集リストの上にはいつも種別・名前の欄を出す (judge.ts の initialRows/buildFinal)。
+// 初期値と確定の書き込みは `fresh` (新規・再開) かどうかで変える:
+// - fresh: AI の提案 (proposal.container) が初期値。確定では常に final.container を載せる
+// - fresh でない (既存コンテナの「撮影して判定」): 今の種別・名前が初期値 (名前が空なら AI の提案)。
+//   確定では編集後の値が今と変わったときだけ final.container を載せる
+//
+// `?new=1` (Home/ContainerScreen の「撮影して登録」= ShootScreen 経由) は fresh:
 // - ShootScreen が撮った写真 (shoot.ts) を受け取り、撮影の段を飛ばしてそのまま送る
-// - 編集リストの上に種別・名前の欄を出し (AI の提案が初期値)、確定の本文に final.container を載せる
 // - 確定後は /app/c/<id>?created=1 へ (コンテナ画面がラベル印刷を目立たせる)
 // - 判定に失敗したときは、作ったばかりの空のコンテナを削除して撮り直せる
 //
-// `?resume=<judgement_id>` (ContainerScreen の未確定の帯「続きから確定」) のときは、撮影の段を飛ばし
+// `?resume=<judgement_id>` (ContainerScreen の未確定の帯「続きから確定」) も fresh。撮影の段を飛ばし
 // 保存済みの提案 (GET /api/judgements/:id) で編集を出す。見た目と確定後の行き先は ?new=1 と同じ。
 // 提案が無い (404)・確定済み (409) なら、その旨を出して撮影の段に戻す
 import { useEffect, useState } from "preact/hooks";
@@ -34,6 +39,7 @@ import {
   type AssetDraft,
   type AssetRow,
   type ContainerRow,
+  type CurrentContainer,
   type EditState,
   type StockRow,
 } from "../judge";
@@ -59,8 +65,9 @@ export function JudgeScreen({ params, query }: ScreenProps) {
   const id = params.id;
   const isNew = query.new === "1";
   const resume = query.resume;
-  // 新規 (?new=1) と提案からの再開 (?resume=) は同じ見た目: 種別・名前の欄・削除して撮り直す・確定後 ?created=1
-  const withContainer = isNew || !!resume;
+  // 新規 (?new=1) と提案からの再開 (?resume=) だけ fresh: 削除して撮り直す・確定後 ?created=1・
+  // 種別名前欄と確定の初期値/書き込み判定 (judge.ts) に使う。種別・名前の欄自体は常に出す
+  const fresh = isNew || !!resume;
   const load = useLoad(() => getContainer(id), id);
   const [phase, setPhase] = useState<Phase>({ s: "shoot" });
 
@@ -164,7 +171,7 @@ export function JudgeScreen({ params, query }: ScreenProps) {
         <>
           {phase.note && <p class="error">{phase.note}</p>}
           <Shoot onFile={onFile} />
-          {withContainer && phase.note && (
+          {fresh && phase.note && (
             <p>
               <button disabled={deleting} onClick={deleteAndReshoot}>
                 {deleting ? "削除しています…" : "削除して撮り直す"}
@@ -190,7 +197,7 @@ export function JudgeScreen({ params, query }: ScreenProps) {
             >
               やめる
             </button>
-            {withContainer && (
+            {fresh && (
               <button disabled={deleting} onClick={deleteAndReshoot}>
                 {deleting ? "削除しています…" : "削除して撮り直す"}
               </button>
@@ -199,7 +206,7 @@ export function JudgeScreen({ params, query }: ScreenProps) {
         </div>
       )}
       {phase.s === "edit" && (
-        <Editor containerId={id} result={phase.result} withContainer={withContainer} onReshoot={() => setPhase({ s: "shoot" })} />
+        <Editor containerId={id} result={phase.result} current={d.container} fresh={fresh} onReshoot={() => setPhase({ s: "shoot" })} />
       )}
 
       <p>
@@ -251,15 +258,17 @@ let nextKey = 0;
 function Editor({
   containerId,
   result,
-  withContainer,
+  current,
+  fresh,
   onReshoot,
 }: {
   containerId: string;
   result: JudgeResult;
-  withContainer: boolean;
+  current: CurrentContainer;
+  fresh: boolean;
   onReshoot: () => void;
 }) {
-  const [state, setState] = useState<EditState>(() => initialRows(result, { withContainer }));
+  const [state, setState] = useState<EditState>(() => initialRows(result, { current, fresh }));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -306,12 +315,12 @@ function Editor({
 
   const confirm = async () => {
     setError(null);
-    const built = buildFinal(state);
+    const built = buildFinal(state, { current, fresh });
     if (!built.ok) return setError(built.error);
     setBusy(true);
     try {
       await confirmJudgement(result.judgement_id, built.final);
-      navigate(`/app/c/${encodeURIComponent(containerId)}${withContainer ? "?created=1" : ""}`);
+      navigate(`/app/c/${encodeURIComponent(containerId)}${fresh ? "?created=1" : ""}`);
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
