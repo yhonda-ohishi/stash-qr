@@ -283,12 +283,15 @@ fn str_of(v: &Value, key: &str) -> Option<String> {
 // POST /api/judgements/:id/confirm
 // ---------------------------------------------------------------------------
 
+/// コンテナ自体の種別・名前 (final.container、任意)。kind は空不可、name は trim して空なら無し。
+type ContainerFinal = (String, Option<String>);
+/// parse_final() の戻り値: stock の行 (json_each 用)・個体 ID の一覧・コンテナ自体の種別/名前。
+type ParsedFinal = (Vec<Value>, Vec<String>, Option<ContainerFinal>);
+
 /// 本文の final を検査し、SQL に渡す stock の行 (json_each 用) と個体 ID の一覧にする。
 /// stock の各行: `{ id, category, name, qty, attrs, new_id }`。id が無い行は名前で照合し、
 /// 無ければ new_id で数量品目を作る。
-fn parse_final(
-    body: &Map<String, Value>,
-) -> std::result::Result<(Vec<Value>, Vec<String>), String> {
+fn parse_final(body: &Map<String, Value>) -> std::result::Result<ParsedFinal, String> {
     let Some(Value::Object(fin)) = body.get("final") else {
         return Err("final must be an object".into());
     };
@@ -297,6 +300,27 @@ fn parse_final(
     };
     let Some(Value::Array(assets)) = fin.get("assets") else {
         return Err("final.assets must be an array".into());
+    };
+    let container: Option<ContainerFinal> = match fin.get("container") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(c)) => {
+            let Some(kind) = c
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                return Err("final.container.kind must be a non-empty string".into());
+            };
+            let name = c
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            Some((kind.to_string(), name))
+        }
+        Some(_) => return Err("final.container must be an object".into()),
     };
 
     let mut lines = Vec::with_capacity(stock.len());
@@ -360,7 +384,7 @@ fn parse_final(
         }
         asset_ids.push(id.to_string());
     }
-    Ok((lines, asset_ids))
+    Ok((lines, asset_ids, container))
 }
 
 /// json_each の 1 行 (`{col}.value`) を品目 ID に解決する式。id 指定ならそのまま、
@@ -389,19 +413,31 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
         Ok(b) => b,
         Err(r) => return r,
     };
-    let (lines, asset_ids) = match parse_final(&body) {
+    let (lines, asset_ids, container) = match parse_final(&body) {
         Ok(v) => v,
         Err(msg) => return error(400, &msg),
     };
     let confirm_id = new_id(ROW_ID_LEN);
     let stock_json = json!(lines).to_string();
     let assets_json = json!(asset_ids).to_string();
-    let final_json =
-        json!({ "confirm_id": confirm_id, "stock": lines, "assets": asset_ids }).to_string();
+    let container_json = match &container {
+        Some((kind, name)) => json!({ "kind": kind, "name": name }),
+        None => Value::Null,
+    };
+    let final_json = json!({
+        "confirm_id": confirm_id, "stock": lines, "assets": asset_ids, "container": container_json,
+    })
+    .to_string();
     let note = format!("judgement {jid}");
+    let (kind_ref, name_ref) = match &container {
+        Some((kind, name)) => (Some(kind.as_str()), name.as_deref()),
+        None => (None, None),
+    };
 
     let d1 = db::db(&ctx)?;
     // 文ごとに使う最大の番号までを渡す (SQLite は番号の最大値ぶんの値を要求する)。
+    // 8・9 番目 (kind・name) は final.container が無ければ NULL のまま束ねておき、
+    // container を更新する文だけがそれを使う (無ければその文自体を batch に足さない)。
     let binds = [
         text(&jid),
         text(&final_json),
@@ -410,6 +446,8 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
         text(&confirm_id),
         text(&ctx.data.0),
         text(&note),
+        opt_text(kind_ref),
+        opt_text(name_ref),
     ];
     let (ra, rb) = (resolve("a"), resolve("b"));
     let rs = resolve("s");
@@ -501,17 +539,18 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
                AND container_id IS NOT {CONTAINER} AND {GUARD}"
         ))
         .bind(&binds[..5])?;
-    let r = d1
-        .batch(vec![
-            save,
-            new_types,
-            adjust,
-            upsert,
-            prune,
-            asset_moves,
-            place,
-        ])
-        .await?;
+    let mut stmts = vec![save, new_types, adjust, upsert, prune, asset_moves, place];
+    // 8. final.container があれば、このコンテナ自体の種別・名前も書き換える。
+    if container.is_some() {
+        let rename = d1
+            .prepare(format!(
+                "UPDATE containers SET kind = ?8, name = ?9, updated_at = {NOW}
+                 WHERE id = {CONTAINER} AND {GUARD}"
+            ))
+            .bind(&binds[..9])?;
+        stmts.push(rename);
+    }
+    let r = d1.batch(stmts).await?;
 
     if db::changes(&r[0])? == 1 {
         #[derive(Deserialize)]
@@ -570,13 +609,13 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
 mod tests {
     use super::*;
 
-    fn parse(v: Value) -> std::result::Result<(Vec<Value>, Vec<String>), String> {
+    fn parse(v: Value) -> std::result::Result<ParsedFinal, String> {
         parse_final(v.as_object().unwrap())
     }
 
     #[test]
     fn parse_final_accepts_ids_and_names() {
-        let (lines, assets) = parse(json!({ "final": {
+        let (lines, assets, container) = parse(json!({ "final": {
             "stock": [
                 { "item_type_id": "T1", "qty": 3 },
                 { "category": " cable ", "name": "A-C", "qty": 0, "attrs": { "end1": "A" } },
@@ -590,6 +629,40 @@ mod tests {
         assert_eq!(lines[1]["attrs"]["end1"], "A");
         assert_eq!(lines[1]["new_id"].as_str().unwrap().len(), ROW_ID_LEN);
         assert_eq!(assets, vec!["A1", "A2"]);
+        assert_eq!(container, None);
+    }
+
+    #[test]
+    fn parse_final_accepts_container() {
+        let (_, _, container) = parse(json!({ "final": {
+            "stock": [], "assets": [],
+            "container": { "kind": " box ", "name": " USB ケーブルの袋 " },
+        }}))
+        .unwrap();
+        assert_eq!(
+            container,
+            Some(("box".to_string(), Some("USB ケーブルの袋".to_string())))
+        );
+
+        // name は無くてもよい (trim して空も無しと同じ扱い)
+        let (_, _, only_kind) = parse(json!({ "final": {
+            "stock": [], "assets": [], "container": { "kind": "bag", "name": "  " },
+        }}))
+        .unwrap();
+        assert_eq!(only_kind, Some(("bag".to_string(), None)));
+
+        assert!(
+            parse(json!({ "final": {
+                "stock": [], "assets": [], "container": { "name": "no kind" },
+            }}))
+            .is_err()
+        );
+        assert!(
+            parse(json!({ "final": {
+                "stock": [], "assets": [], "container": { "kind": "" },
+            }}))
+            .is_err()
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Asset, JudgeResult } from "./api";
-import { buildFinal, initialRows, zeroedItems, type EditState, type StockRow } from "./judge";
+import { buildFinal, initialRows, proposalContainer, zeroedItems, type EditState, type StockRow } from "./judge";
 
 function asset(id: string, container_id: string | null = null): Asset {
   return {
@@ -102,6 +102,30 @@ describe("initialRows", () => {
     const f = buildFinal(s);
     expect(f.ok && f.final.assets).toEqual(["A1", "A2"]);
   });
+
+  test("withContainer: AI の提案 (proposal.container) を初期値にする。無ければ bag / 空", () => {
+    const withProposal = initialRows(result({ proposal: { container: { kind: "bag", name: "USB ケーブルの袋" } } }), {
+      withContainer: true,
+    });
+    expect(withProposal.container).toEqual({ kind: "bag", name: "USB ケーブルの袋" });
+
+    const withoutProposal = initialRows(result({ proposal: {} }), { withContainer: true });
+    expect(withoutProposal.container).toEqual({ kind: "bag", name: "" });
+
+    // withContainer を付けなければ container 行は無い (通常の撮影して判定)
+    expect(initialRows(result({ proposal: { container: { kind: "box", name: "x" } } })).container).toBeUndefined();
+  });
+});
+
+describe("proposalContainer", () => {
+  test("proposal.container を読む。形が違えば null", () => {
+    expect(proposalContainer({ container: { kind: "box", name: "箱" } })).toEqual({ kind: "box", name: "箱" });
+    expect(proposalContainer({ container: { kind: "box" } })).toEqual({ kind: "box", name: null });
+    expect(proposalContainer({})).toBeNull();
+    expect(proposalContainer(null)).toBeNull();
+    expect(proposalContainer({ container: { name: "no kind" } })).toBeNull();
+    expect(proposalContainer("not an object")).toBeNull();
+  });
 });
 
 describe("buildFinal", () => {
@@ -181,5 +205,19 @@ describe("buildFinal", () => {
     const ok = buildFinal({ stock: [], assets: [a("1", "A1"), a("2", null), a("3", "A2")] });
     expect(ok).toEqual({ ok: true, final: { stock: [], assets: ["A1", "A2"] } });
     expect(buildFinal({ stock: [], assets: [a("1", "A1"), a("2", "A1")] }).ok).toBe(false);
+  });
+
+  test("container: 種別を trim して final に載せる。空なら止める、名前は空なら省く", () => {
+    const withName = buildFinal({ stock: [], assets: [], container: { kind: " bag ", name: " USB ケーブルの袋 " } });
+    expect(withName).toEqual({ ok: true, final: { stock: [], assets: [], container: { kind: "bag", name: "USB ケーブルの袋" } } });
+
+    const withoutName = buildFinal({ stock: [], assets: [], container: { kind: "box", name: "  " } });
+    expect(withoutName).toEqual({ ok: true, final: { stock: [], assets: [], container: { kind: "box" } } });
+
+    expect(buildFinal({ stock: [], assets: [], container: { kind: "  ", name: "" } }).ok).toBe(false);
+
+    // container 無しの通常の確定は final にキー自体が無い (前の指示までと同じ)
+    const noContainer = buildFinal({ stock: [], assets: [] });
+    expect(noContainer.ok && noContainer.final).not.toHaveProperty("container");
   });
 });

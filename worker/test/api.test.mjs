@@ -1032,6 +1032,37 @@ describe("コンテナ判定と確定", () => {
     assert.deepEqual(stockOf(box.body.id), []);
   });
 
+  test("AI がコンテナ自体の種別・名前を提案し、確定の final.container で書き換わる。二重確定は変えない", async () => {
+    const box = await post("/api/containers", { kind: "box", name: "元の名前" });
+    gemini.container = { stock: [], assets: [], container: { kind: "bag", name: "USB ケーブルの袋" } };
+    const r = await judge(box.body.id);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.proposal.container, { kind: "bag", name: "USB ケーブルの袋" });
+
+    const ok = await confirm(r.body.judgement_id, { stock: [], assets: [], container: { kind: "bag", name: " USB ケーブルの袋 " } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const [c] = sql(`SELECT kind, name FROM containers WHERE id = '${box.body.id}'`);
+    assert.deepEqual(c, { kind: "bag", name: "USB ケーブルの袋" });
+
+    // final.container を送らない確定 (前の指示までの呼び出し) は今までどおり種別・名前を変えない
+    gemini.container = { stock: [], assets: [] };
+    const r2 = await judge(box.body.id);
+    const ok2 = await confirm(r2.body.judgement_id, { stock: [], assets: [] });
+    assert.equal(ok2.status, 200, JSON.stringify(ok2.body));
+    assert.deepEqual(sql(`SELECT kind, name FROM containers WHERE id = '${box.body.id}'`)[0], { kind: "bag", name: "USB ケーブルの袋" });
+
+    // 二重確定 (409) は種別・名前も変えない
+    const again = await confirm(r2.body.judgement_id, { stock: [], assets: [], container: { kind: "shelf", name: "変わらないはず" } });
+    assert.equal(again.status, 409);
+    assert.deepEqual(sql(`SELECT kind, name FROM containers WHERE id = '${box.body.id}'`)[0], { kind: "bag", name: "USB ケーブルの袋" });
+
+    // kind の無い/空の container は 400
+    gemini.container = { stock: [], assets: [] };
+    const r3 = await judge(box.body.id);
+    assert.equal((await confirm(r3.body.judgement_id, { stock: [], assets: [], container: { name: "no kind" } })).status, 400);
+    assert.equal((await confirm(r3.body.judgement_id, { stock: [], assets: [], container: { kind: "" } })).status, 400);
+  });
+
   test("無いコンテナの判定は 404 で Gemini を呼ばない・未認証は 401", async () => {
     const before = gemini.requests.length;
     assert.equal((await judge("ZZZZZZ")).status, 404);

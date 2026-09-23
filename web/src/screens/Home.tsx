@@ -31,6 +31,12 @@ export function Home({ query }: ScreenProps) {
       <h1>stash-qr</h1>
 
       <section>
+        <a class="button primary shoot" href="/app/shoot">
+          撮影して登録
+        </a>
+      </section>
+
+      <section>
         {scanning ? (
           <>
             <QrScanner onResult={(t) => navigate(appPath(t))} />
@@ -93,9 +99,6 @@ function TopContainers() {
           ))}
         </ul>
       )}
-      <a class="button" href="/app/new">
-        新しいコンテナ
-      </a>
     </section>
   );
 }

@@ -1,9 +1,16 @@
 // 撮影 → AI 判定 → 編集 → 確定。AI の判定は提案で、ユーザーが直した一覧で確定する。
 // 確定はコンテナ直下の本数を一覧とぴったり同じにするので、今ある品目も行として出す (judge.ts)。
-import { useState } from "preact/hooks";
+//
+// `?new=1` (Home/ContainerScreen の「撮影して登録」= ShootScreen 経由) のときは:
+// - ShootScreen が撮った写真 (shoot.ts) を受け取り、撮影の段を飛ばしてそのまま送る
+// - 編集リストの上に種別・名前の欄を出し (AI の提案が初期値)、確定の本文に final.container を載せる
+// - 確定後は /app/c/<id>?created=1 へ (コンテナ画面がラベル印刷を目立たせる)
+// - 判定に失敗したときは、作ったばかりの空のコンテナを削除して撮り直せる
+import { useEffect, useState } from "preact/hooks";
 import {
   ApiError,
   confirmJudgement,
+  deleteContainer,
   getContainer,
   judgeContainer,
   listItemTypes,
@@ -13,9 +20,19 @@ import {
   type PhotoView,
 } from "../api";
 import { shrinkImage } from "../image";
-import { assetLabel, buildFinal, initialRows, zeroedItems, type AssetRow, type EditState, type StockRow } from "../judge";
+import {
+  assetLabel,
+  buildFinal,
+  initialRows,
+  zeroedItems,
+  type AssetRow,
+  type ContainerRow,
+  type EditState,
+  type StockRow,
+} from "../judge";
 import { add, discard, settle } from "../pending";
 import { navigate, type ScreenProps } from "../router";
+import { takePendingShootImage } from "../shoot";
 import { Crumbs, crumbLabel, errorText, useLoad } from "../ui";
 
 type Phase =
@@ -31,8 +48,9 @@ function photoOf(e: ApiError): PhotoView | null {
   return p && typeof p.id === "string" ? p : null;
 }
 
-export function JudgeScreen({ params }: ScreenProps) {
+export function JudgeScreen({ params, query }: ScreenProps) {
   const id = params.id;
+  const isNew = query.new === "1";
   const load = useLoad(() => getContainer(id), id);
   const [phase, setPhase] = useState<Phase>({ s: "shoot" });
 
@@ -69,6 +87,22 @@ export function JudgeScreen({ params }: ScreenProps) {
     }
   };
 
+  // `?new=1`: ShootScreen が撮った写真 (既に縮めてある) を受け取り、撮影の段を飛ばして送る。
+  // ページの再読み込みなどで受け取れなければ (null)、いつもどおり手で撮る画面に留まる。
+  useEffect(() => {
+    if (!isNew) return;
+    const blob = takePendingShootImage();
+    if (!blob) return;
+    setPhase({ s: "sending" });
+    add({ blob, contentType: "image/jpeg", kind: "container", containerId: id }).then(
+      (localId) => send(localId, blob),
+      (e) => setPhase({ s: "shoot", note: errorText(e) }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, isNew]);
+
+  const [deleting, setDeleting] = useState(false);
+
   if (load.error) {
     const e = load.error;
     return (
@@ -81,6 +115,18 @@ export function JudgeScreen({ params }: ScreenProps) {
   const d = load.data;
   if (!d) return <main>読み込み中…</main>;
 
+  const parentId = d.breadcrumb.length > 1 ? d.breadcrumb[d.breadcrumb.length - 2].id : null;
+  const deleteAndReshoot = async () => {
+    setDeleting(true);
+    try {
+      await deleteContainer(id);
+      navigate(parentId ? `/app/shoot?parent=${encodeURIComponent(parentId)}` : "/app/shoot", { replace: true });
+    } catch (e) {
+      setDeleting(false);
+      setPhase((p) => (p.s === "shoot" ? { ...p, note: errorText(e) } : p));
+    }
+  };
+
   return (
     <main>
       <Crumbs items={d.breadcrumb} />
@@ -92,6 +138,13 @@ export function JudgeScreen({ params }: ScreenProps) {
         <>
           {phase.note && <p class="error">{phase.note}</p>}
           <Shoot onFile={onFile} />
+          {isNew && phase.note && (
+            <p>
+              <button disabled={deleting} onClick={deleteAndReshoot}>
+                {deleting ? "削除しています…" : "削除して撮り直す"}
+              </button>
+            </p>
+          )}
         </>
       )}
       {phase.s === "sending" && <p class="pending">送信して判定しています…</p>}
@@ -109,10 +162,17 @@ export function JudgeScreen({ params }: ScreenProps) {
             >
               やめる
             </button>
+            {isNew && (
+              <button disabled={deleting} onClick={deleteAndReshoot}>
+                {deleting ? "削除しています…" : "削除して撮り直す"}
+              </button>
+            )}
           </div>
         </div>
       )}
-      {phase.s === "edit" && <Editor containerId={id} result={phase.result} onReshoot={() => setPhase({ s: "shoot" })} />}
+      {phase.s === "edit" && (
+        <Editor containerId={id} result={phase.result} isNew={isNew} onReshoot={() => setPhase({ s: "shoot" })} />
+      )}
 
       <p>
         <a href={`/app/c/${encodeURIComponent(id)}`}>コンテナへ戻る</a>
@@ -154,11 +214,23 @@ function Shoot({ onFile }: { onFile: (f: File) => void }) {
 
 let nextKey = 0;
 
-function Editor({ containerId, result, onReshoot }: { containerId: string; result: JudgeResult; onReshoot: () => void }) {
-  const [state, setState] = useState<EditState>(() => initialRows(result));
+function Editor({
+  containerId,
+  result,
+  isNew,
+  onReshoot,
+}: {
+  containerId: string;
+  result: JudgeResult;
+  isNew: boolean;
+  onReshoot: () => void;
+}) {
+  const [state, setState] = useState<EditState>(() => initialRows(result, { withContainer: isNew }));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const setContainer = (patch: Partial<ContainerRow>) =>
+    setState((s) => (s.container ? { ...s, container: { ...s.container, ...patch } } : s));
   const setRow = (key: string, patch: Partial<StockRow>) =>
     setState((s) => ({ ...s, stock: s.stock.map((r) => (r.key === key ? { ...r, ...patch } : r)) }));
   const removeRow = (key: string) => setState((s) => ({ ...s, stock: s.stock.filter((r) => r.key !== key) }));
@@ -192,7 +264,7 @@ function Editor({ containerId, result, onReshoot }: { containerId: string; resul
     setBusy(true);
     try {
       await confirmJudgement(result.judgement_id, built.final);
-      navigate(`/app/c/${encodeURIComponent(containerId)}`);
+      navigate(`/app/c/${encodeURIComponent(containerId)}${isNew ? "?created=1" : ""}`);
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -205,6 +277,8 @@ function Editor({ containerId, result, onReshoot }: { containerId: string; resul
         AI の提案です。直してから確定してください。
         {result.photo.status === "pending" && " (写真は Flickr への送信待ちです。あとで自動で送り直します)"}
       </p>
+
+      {state.container && <ContainerFields row={state.container} onChange={setContainer} />}
 
       <h2>本数</h2>
       <p class="muted">確定すると、このコンテナ直下の本数がこの一覧どおりになります。</p>
@@ -256,6 +330,28 @@ function Editor({ containerId, result, onReshoot }: { containerId: string; resul
         </button>
       </p>
     </>
+  );
+}
+
+/** 「撮影して登録」のときだけ出す、コンテナ自体の種別・名前 (AI の提案が初期値)。 */
+function ContainerFields({ row, onChange }: { row: ContainerRow; onChange: (p: Partial<ContainerRow>) => void }) {
+  return (
+    <section class="container-fields">
+      <h2>このコンテナ</h2>
+      <label>
+        種別
+        <input type="text" value={row.kind} onInput={(e) => onChange({ kind: e.currentTarget.value })} required />
+      </label>
+      <label>
+        名前
+        <input
+          type="text"
+          placeholder="例: USB ケーブルの袋"
+          value={row.name}
+          onInput={(e) => onChange({ name: e.currentTarget.value })}
+        />
+      </label>
+    </section>
   );
 }
 

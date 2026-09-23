@@ -362,6 +362,9 @@ export type JudgedAsset = {
   candidates: Asset[];
 };
 
+/** AI が提案するコンテナ自体の種別・名前 (proposal.container、gemini.rs container_schema)。 */
+export type JudgedContainer = { kind: string; name: string | null };
+
 /** `POST /api/containers/:id/judge` の応答 */
 export type JudgeResult = {
   judgement_id: string;
@@ -379,8 +382,9 @@ export type ConfirmStockLine =
   | { item_type_id: string; qty: number }
   | { category: string; name: string; attrs?: Record<string, unknown> | null; qty: number };
 
-/** 確定の一覧。stock はコンテナ直下の本数をぴったりこれにする (載っていない品目は 0 本)。 */
-export type ConfirmFinal = { stock: ConfirmStockLine[]; assets: string[] };
+/** 確定の一覧。stock はコンテナ直下の本数をぴったりこれにする (載っていない品目は 0 本)。
+ * container を付けるとコンテナ自体の種別・名前も書き換わる (「撮影して登録」の新規コンテナ用)。 */
+export type ConfirmFinal = { stock: ConfirmStockLine[]; assets: string[]; container?: { kind: string; name?: string } };
 
 /** `POST /api/judgements/:id/confirm` の応答 (確定後のコンテナ直下) */
 export type ConfirmResult = {
