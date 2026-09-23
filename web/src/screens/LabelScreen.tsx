@@ -93,14 +93,14 @@ export function LabelScreen({ query }: ScreenProps) {
 
       {stage.kind === "idle" && (
         <section>
-          <label class="button primary" style="display:block;text-align:center">
+          <label class="button primary">
             製品ラベルを撮影
             <input
               type="file"
               accept="image/*"
               capture="environment"
               onChange={onFile}
-              style="display:none"
+              class="file-hidden"
             />
           </label>
           {pickError && <p class="error">{pickError}</p>}
