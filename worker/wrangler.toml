@@ -48,7 +48,8 @@ GEMINI_MODEL = "gemini-3.8-flash"
 # ---------------------------------------------------------------------------
 [previews.vars]
 ACCESS_ISSUER = "https://mtamaramu.cloudflareaccess.com"
-ACCESS_AUD = ""
+# Access アプリ "stash-qr previews" (*-stash-qr.m-tama-ramu.workers.dev を保護)
+ACCESS_AUD = "b4d76502dec96ce3bf36dfaa8b1dfd5c7d961a1ff881eb8f07906df811c08dc0"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 [[previews.d1_databases]]
