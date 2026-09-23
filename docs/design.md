@@ -10,7 +10,7 @@
 ## 構成（モノレポ）
 
 - `worker/` : Cloudflare Workers（Rust / workers-rs）+ D1。API、Flickr 連携、簡易閲覧ページ
-- `web/` : PWA（スマホのブラウザで動く画面）。Worker から静的に配信し、Access の後ろに置く。フレームワークは着手時に決める
+- `web/` : PWA（スマホのブラウザで動く画面）。Preact + Vite。ビルド結果 web/dist を Workers static assets で配り、run_worker_first で全部 Worker (Access の JWT 検証) を通す
 - `docs/` : 設計メモ、撮影ガイド用の見本
 
 ## 絶対のルール

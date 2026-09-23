@@ -54,6 +54,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/search", view::search)
         .get_async("/c/:id", view::container_page)
         .get_async("/a/:id", view::asset_page)
+        // catch-all (末尾)。/c/:id・/a/:id は #c9-1 がこれより前に足したので衝突しない。
+        // /api/* の未一致はここに落ちる (Router 既定の "Not Found" テキストではなく JSON にする — 振る舞いの変更)。
+        // それ以外は静的アセット (web/dist、[assets] binding = "ASSETS")。GET 以外の未一致は今まで通り Router 既定。
+        .get_async("/", assets_or_not_found)
+        .get_async("/*path", assets_or_not_found)
         .run(req, env)
         .await;
     match res {
@@ -63,6 +68,14 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             error(500, "internal error")
         }
     }
+}
+
+/// GET の catch-all。/api/ 配下は 404 JSON、それ以外は web/dist (Workers static assets) を返す。
+async fn assets_or_not_found(req: Request, ctx: Ctx) -> Result<Response> {
+    if req.path().starts_with("/api/") {
+        return error(404, "not found");
+    }
+    ctx.env.assets("ASSETS")?.fetch_request(req).await
 }
 
 /// Access で確かめた持ち主 (利用者の email かサービストークンの common_name)。
