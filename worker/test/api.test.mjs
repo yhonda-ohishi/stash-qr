@@ -5,7 +5,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -22,7 +22,69 @@ let bareBase; // Access 設定なし (fail closed の確認用)
 let issuer;
 let state;
 let jwks;
+let flickrSrv;
 const devs = [];
+
+// 偽の Flickr。受け取ったアップロードと、署名の検証結果をここに残す。
+const FLICKR = { consumerKey: "ck-test", consumerSecret: "cs-test", token: "at-test", tokenSecret: "ats-test" };
+const flickr = { uploads: [], photos: new Map(), failUploads: false, nextId: 9000, badSignatures: 0 };
+
+function pct(s) {
+  return encodeURIComponent(s).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
+function oauthSignature(method, url, params) {
+  const norm = Object.entries(params)
+    .filter(([k]) => k !== "oauth_signature")
+    .map(([k, v]) => [pct(k), pct(v)])
+    .sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+  const base = [method, pct(url), pct(norm)].join("&");
+  const key = `${pct(FLICKR.consumerSecret)}&${pct(FLICKR.tokenSecret)}`;
+  return createHmac("sha1", key).update(base).digest("base64");
+}
+
+async function flickrHandler(req, res, origin) {
+  const url = new URL(req.url, origin);
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const body = Buffer.concat(chunks);
+  if (req.method === "POST" && url.pathname === "/services/upload/") {
+    if (flickr.failUploads) return res.writeHead(500).end("down");
+    const form = await new Request(url, { method: "POST", headers: req.headers, body }).formData();
+    const params = {};
+    for (const [k, v] of form) if (k !== "photo") params[k] = v;
+    const photo = form.get("photo");
+    if (params.oauth_signature !== oauthSignature("POST", `${origin}/services/upload/`, params)) {
+      flickr.badSignatures++;
+      return res.writeHead(200).end('<rsp stat="fail"><err code="96" msg="Invalid signature" /></rsp>');
+    }
+    const id = String(flickr.nextId++);
+    const bytes = Buffer.from(await photo.arrayBuffer());
+    flickr.uploads.push({ id, params, type: photo.type, bytes });
+    flickr.photos.set(id, { server: "65535", secret: `sec${id}`, bytes });
+    return res.writeHead(200).end(`<?xml version="1.0"?><rsp stat="ok"><photoid>${id}</photoid></rsp>`);
+  }
+  if (req.method === "GET" && url.pathname === "/services/rest/") {
+    const params = Object.fromEntries(url.searchParams);
+    for (const m of (req.headers.authorization ?? "").matchAll(/(\w+)="([^"]*)"/g)) params[m[1]] = decodeURIComponent(m[2]);
+    if (params.oauth_signature !== oauthSignature("GET", `${origin}/services/rest/`, params)) {
+      flickr.badSignatures++;
+      return res.writeHead(200).end(JSON.stringify({ stat: "fail", code: 96, message: "Invalid signature" }));
+    }
+    const p = flickr.photos.get(params.photo_id);
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify(p ? { stat: "ok", photo: { id: params.photo_id, server: p.server, secret: p.secret } } : { stat: "fail", code: 1, message: "Photo not found" }));
+  }
+  const m = url.pathname.match(/^\/static\/(\w+)\/(\d+)_(\w+)_(\w)\.jpg$/);
+  if (req.method === "GET" && m) {
+    const p = flickr.photos.get(m[2]);
+    if (!p || p.server !== m[1] || p.secret !== m[3]) return res.writeHead(404).end();
+    res.writeHead(200, { "content-type": "image/jpeg", "x-size": m[4] });
+    return res.end(p.bytes);
+  }
+  res.writeHead(404).end();
+}
 
 // JWKS に載せる鍵と、載せない鍵 (なりすまし用)
 const good = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -82,12 +144,28 @@ before(async () => {
     res.end(JSON.stringify({ keys: [{ ...pub, kid: KID, alg: "RS256", use: "sig" }] }));
   }).listen(jwksPort, "127.0.0.1");
 
+  const flickrPort = await freePort();
+  const flickrOrigin = `http://127.0.0.1:${flickrPort}`;
+  flickrSrv = createHttpServer((req, res) => {
+    flickrHandler(req, res, flickrOrigin).catch((e) => res.writeHead(500).end(String(e)));
+  }).listen(flickrPort, "127.0.0.1");
+
   state = mkdtempSync(join(tmpdir(), "stash-qr-test-"));
   execFileSync(WRANGLER, ["d1", "migrations", "apply", "DB", "--local", "--persist-to", state], {
     cwd: CWD,
     stdio: "ignore",
   });
-  base = await startDev({ ACCESS_ISSUER: issuer, ACCESS_AUD: AUD });
+  base = await startDev({
+    ACCESS_ISSUER: issuer,
+    ACCESS_AUD: AUD,
+    FLICKR_UPLOAD_URL: `${flickrOrigin}/services/upload/`,
+    FLICKR_REST_URL: `${flickrOrigin}/services/rest/`,
+    FLICKR_STATIC_BASE: `${flickrOrigin}/static`,
+    // 本番では Worker secret。ローカルでは --var で同じ名前の文字列として渡す
+    FLICKR_CONSUMER_KEY: FLICKR.consumerKey,
+    FLICKR_CONSUMER_SECRET: FLICKR.consumerSecret,
+    FLICKR_ACCESS_TOKEN_JSON: JSON.stringify({ token: FLICKR.token, secret: FLICKR.tokenSecret, userNsid: "1@N00", username: "t" }),
+  });
   // wrangler.toml の [vars] には本番の値が入っているので、空で上書きして未設定を作る
   bareBase = await startDev({ ACCESS_ISSUER: "", ACCESS_AUD: "" });
 });
@@ -95,6 +173,7 @@ before(async () => {
 after(() => {
   for (const d of devs) if (d.pid) process.kill(-d.pid, "SIGTERM");
   jwks?.close();
+  flickrSrv?.close();
   if (state) rmSync(state, { recursive: true, force: true });
 });
 
@@ -305,5 +384,98 @@ describe("Cloudflare Access", () => {
   test("ACCESS_* が未設定なら正しいトークンでも 503 (fail closed)", async () => {
     assert.equal(await status(jwt(), bareBase), 503);
     assert.equal(await status(null, bareBase), 503);
+  });
+});
+
+describe("photos (Flickr)", () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
+
+  async function upload(query, { bytes = JPEG, type = "image/jpeg", method = "POST", path = "/api/photos" } = {}) {
+    const res = await fetch(`${base}${path}${query}`, {
+      method,
+      headers: { "content-type": type, "cf-access-jwt-assertion": jwt() },
+      body: bytes,
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  async function image(id, size) {
+    const q = size ? `?size=${size}` : "";
+    return fetch(`${base}/api/photos/${id}${q}`, { headers: { "cf-access-jwt-assertion": jwt() } });
+  }
+
+  test("非公開・マシンタグ付きで Flickr に上がり、署名が正しい", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const r = await upload(`?kind=container&container_id=${box.body.id.toLowerCase()}`);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.photo.status, "uploaded");
+    assert.equal(r.body.photo.container_id, box.body.id);
+    assert.equal(flickr.badSignatures, 0);
+
+    const up = flickr.uploads.at(-1);
+    assert.deepEqual(up.bytes, JPEG);
+    assert.equal(up.type, "image/jpeg");
+    assert.equal(up.params.is_public, "0");
+    assert.equal(up.params.is_friend, "0");
+    assert.equal(up.params.is_family, "0");
+    assert.equal(up.params.hidden, "2");
+    assert.deepEqual(up.params.tags.split(" ").sort(), [
+      `stashqr:container=${box.body.id}`,
+      "stashqr:kind=container",
+      `stashqr:photo=${r.body.photo.id}`,
+    ]);
+    // Flickr 側の識別子はクライアントに返さない
+    assert.ok(!JSON.stringify(r.body).includes(up.id));
+  });
+
+  test("画像は Worker が中身を返す (静的 URL を渡さない)", async () => {
+    const r = await upload("?kind=label");
+    const res = await image(r.body.photo.id, "z");
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "image/jpeg");
+    assert.match(res.headers.get("cache-control"), /private/);
+    assert.equal(res.headers.get("location"), null);
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), JPEG);
+    // 2 回目は D1 に残した server/secret を使う (getInfo を引き直さなくても取れる)
+    assert.equal((await image(r.body.photo.id)).status, 200);
+    assert.equal((await image(r.body.photo.id, "o")).status, 400, "原寸は出さない");
+    assert.equal((await image("nope")).status, 404);
+  });
+
+  test("Flickr が落ちていても 201 で送信待ちに残り、送り直せる", async () => {
+    flickr.failUploads = true;
+    const r = await upload("?kind=asset");
+    flickr.failUploads = false;
+    assert.equal(r.status, 201);
+    assert.equal(r.body.photo.status, "pending");
+    assert.match(r.body.photo.upload_error, /HTTP 500/);
+    assert.equal((await image(r.body.photo.id)).status, 409);
+
+    const pending = await call("GET", "/api/photos?status=pending");
+    assert.ok(pending.body.photos.some((p) => p.id === r.body.photo.id));
+
+    const before = flickr.uploads.length;
+    const retry = await upload("", { method: "PUT", path: `/api/photos/${r.body.photo.id}/image` });
+    assert.equal(retry.status, 200);
+    assert.equal(retry.body.photo.status, "uploaded");
+    assert.equal(retry.body.photo.upload_error, null);
+    assert.equal(flickr.uploads.length, before + 1);
+
+    // 送信済みの送り直しは何もしない (二重に上げない)
+    const again = await upload("", { method: "PUT", path: `/api/photos/${r.body.photo.id}/image` });
+    assert.equal(again.status, 200);
+    assert.equal(flickr.uploads.length, before + 1);
+    const after = await call("GET", "/api/photos?status=pending");
+    assert.ok(!after.body.photos.some((p) => p.id === r.body.photo.id));
+  });
+
+  test("入力の検証", async () => {
+    assert.equal((await upload("?kind=other")).status, 400);
+    assert.equal((await upload("?kind=label", { type: "application/json" })).status, 415);
+    assert.equal((await upload("?kind=label", { bytes: Buffer.alloc(0) })).status, 400);
+    assert.equal((await upload("?kind=container&container_id=ZZZZZZ")).status, 404);
+    assert.equal((await upload("?kind=asset&asset_id=nope")).status, 404);
+    assert.equal((await upload("", { method: "PUT", path: "/api/photos/nope/image" })).status, 404);
+    assert.equal((await call("GET", "/api/photos")).status, 400);
   });
 });

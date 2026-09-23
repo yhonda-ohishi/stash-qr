@@ -6,8 +6,11 @@ use worker::*;
 mod auth;
 mod containers;
 mod db;
+mod flickr;
 mod id;
 mod item_types;
+mod oauth1;
+mod photos;
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -36,6 +39,10 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/containers/:id/stock", containers::stock_delta)
         .get_async("/api/item-types", item_types::list)
         .post_async("/api/item-types", item_types::create)
+        .post_async("/api/photos", photos::create)
+        .get_async("/api/photos", photos::list)
+        .get_async("/api/photos/:id", photos::image)
+        .put_async("/api/photos/:id/image", photos::retry)
         .run(req, env)
         .await;
     match res {

@@ -28,3 +28,9 @@ migrations_dir = "migrations"
 # Access アプリ "stash-qr"。Google ログインで本人の email だけ許可。
 ACCESS_ISSUER = "https://mtamaramu.cloudflareaccess.com"
 ACCESS_AUD = "dc7fb2c8c7360e23af4c0154f3500978718ac19e341f8ee7ee1fdabcfa2f586c"
+
+# Flickr の資格情報は Worker secret で入れる (リポジトリには置かない):
+#   npx wrangler secret put FLICKR_CONSUMER_KEY
+#   npx wrangler secret put FLICKR_CONSUMER_SECRET
+#   npx wrangler secret put FLICKR_ACCESS_TOKEN_JSON   # {"token","secret","userNsid","username"} の JSON
+# 未設定の間は写真が送信待ち (status=pending) に残るだけで、他の API は動く。
