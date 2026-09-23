@@ -2,7 +2,7 @@
 
 ## 目的
 
-袋（ジップロック）・箱・棚などに入れた物品を、Android で撮影 → AI が提案 → ユーザーが修正して確定 → QR ラベル印刷、という流れで管理する。物品は 2 種類の管理方法を持つ。
+袋（ジップロック）・箱・棚などに入れた物品を、スマホ（PWA）で撮影 → AI が提案 → ユーザーが修正して確定 → QR ラベル印刷、という流れで管理する。物品は 2 種類の管理方法を持つ。
 
 - **数量管理**：ケーブルなど。「この袋に A-C が 2 本」と本数で数える
 - **個体管理**：機器など。製品ラベル（メーカー・型番・シリアル）で 1 台ずつ追う
@@ -10,7 +10,7 @@
 ## 構成（モノレポ）
 
 - `worker/` : Cloudflare Workers（Rust / workers-rs）+ D1。API、Flickr 連携、簡易閲覧ページ
-- `android/` : Kotlin + Jetpack Compose。CameraX、ML Kit（QR 読取）、Epson ePOS2 SDK（印刷）
+- `web/` : PWA（スマホのブラウザで動く画面）。Worker から静的に配信し、Access の後ろに置く。フレームワークは着手時に決める
 - `docs/` : 設計メモ、撮影ガイド用の見本
 
 ## 絶対のルール
@@ -142,16 +142,21 @@ CREATE TABLE photos (
 
 ## 認証（Cloudflare Access）
 
-- 入口は `stash.mtamaramu.com` だけ。`workers_dev` と preview URL は閉じる（Access を通らないため）。
+- 本番の入口は `stash.mtamaramu.com` だけ（`workers_dev = false`）。Previews 用に `preview_urls = true`（下記「Previews」）。
 - Worker は `Cf-Access-Jwt-Assertion` を信用せず、毎回 team の JWKS で RS256 署名・`iss`・`aud`・`exp`/`nbf` を検証する（`worker/src/auth.rs`）。
   失敗は 401、`ACCESS_ISSUER` / `ACCESS_AUD` が空なら全リクエスト 503（fail closed）。
-- 持ち主（ブラウザは `email`、Android のサービストークンは `common_name`）を `movements.actor` に残す。
+- 持ち主（ブラウザは `email`、サービストークンなら `common_name`）を `movements.actor` に残す。PWA は Google ログインのブラウザで動くのでサービストークンは使わない。
 - 設定手順（本番 deploy 前に 1 回）:
   1. Zero Trust → Access → Applications で `stash.mtamaramu.com` の Self-hosted アプリを作る
-  2. ポリシー: 本人の email を Allow、Android 用のサービストークンを Service Auth
+  2. ポリシー: 本人の email を Allow
   3. アプリの AUD タグと `https://<team>.cloudflareaccess.com` を `worker/wrangler.toml` の `[vars]` に書く（秘密ではない）
   - 済: アプリ `stash-qr`（team `mtamaramu`、Google ログイン、本人の email のみ許可）を作成し `[vars]` に記入済み。
-    Android 用サービストークンと Service Auth ポリシーはフェーズ 4 で足す。
+
+## Previews（ブランチ・PR の試験）
+
+- `npx wrangler preview --name <名前>` で `https://<名前>-stash-qr.m-tama-ramu.workers.dev` に出る（Cloudflare Workers Previews、open beta）。
+- D1 は Preview 用の `stash-qr-preview` に差し替わる（`[[previews.d1_databases]]`）。migration は `npx wrangler d1 migrations apply DB --remote -c wrangler.preview-migrations.toml`。
+- Access アプリ `stash-qr previews` が `*-stash-qr.m-tama-ramu.workers.dev` を保護。その AUD を `[previews.vars]` の `ACCESS_AUD` に入れてある。
 
 ## デプロイ
 
@@ -193,22 +198,27 @@ CREATE TABLE photos (
 - ケーブルは両端の端子（A / C / micro-B / mini-B / Lightning / 3.5mm / DC など）を attrs に入れ、name は `端子1-端子2`。判断できない物は category=other, name="不明"。
 - 撮影前提（ケーブル）：1 本ずつビニタイで束ね、両端を袋の同じ辺に揃えて並べる。袋越しで可。実測テストで全問正解。
 
-## Android
+## PWA（スマホの画面）
 
-- QR スキャン → コンテナ画面／個体画面
-- コンテナ撮影 → 判定 → 編集リスト（数量物・個体候補）→ 確定
+- QR スキャン → コンテナ画面／個体画面。QR の読み取りは Chrome の `BarcodeDetector`
+- コンテナ撮影 → 判定 → 編集リスト（数量物・個体候補）→ 確定。撮影は `getUserMedia` か `<input type="file" capture>`
 - 製品ラベル撮影 → 判定 → 編集 → 個体登録
 - 2 スキャン移動：対象 QR → 移動先 QR（コンテナ・個体共通）
 - 本数の出し入れ：QR → 品目選択 → ±数量
-- 印刷：EPSON TM-L100 に ePOS2 SDK で LAN 接続。ラベル = QR（`https://stash.mtamaramu.com/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
+- 送り直し：Flickr に入るまで画像を IndexedDB に残し、`GET /api/photos?status=pending` を見て `PUT /api/photos/:id/image` で送り直す
+- 印刷：EPSON TM-L100（LAN、例 `192.168.11.239`）にブラウザから ePOS-Print XML を直接 POST する
+  （`https://<ip>/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`。プリンタは `Access-Control-Allow-Origin: *` を返す）。
+  スマホごとに最初の 1 回だけ `https://<ip>/` を開いてプリンタの自己署名証明書を通す。2026-09-23 にスマホから印刷できることを確認済み。
+  ラベル = QR（`https://stash.mtamaramu.com/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
+  プリンタの IP は端末ごとに localStorage に持つ（サーバーには置かない）。
 
 ## 進め方（フェーズ）
 
 1. worker：D1 マイグレーション、コンテナ CRUD・移動（循環チェック）・stock 出し入れ、テスト
 2. worker：Flickr アップロード（OAuth 1.0a、非公開、マシンタグ、再送）と画像プロキシ
 3. worker：コンテナ判定・ラベル判定・確定反映、個体照合
-4. android：QR 読取、閲覧、撮影 → 判定 → 編集 → 確定、個体登録
-5. android：TM-L100 印刷
+4. pwa：QR 読取、閲覧、撮影 → 判定 → 編集 → 確定、個体登録、送り直し
+5. pwa：TM-L100 印刷（ePOS-Print XML、`/tools/print-test` の処理を取り込む）
 6. worker：`/c/:id`・`/a/:id` 閲覧ページ、検索
 
 ## 未決事項（実装前にユーザーに確認）
@@ -216,8 +226,9 @@ CREATE TABLE photos (
 - [x] リポジトリ名：`stash-qr`
 - [x] マシンタグの名前空間：`stashqr`（Flickr の namespace は `-` 不可）
 - [x] 公開ドメイン：`stash.mtamaramu.com`（個人アプリ。QR は `https://stash.mtamaramu.com/c/<id>`・`/a/<id>`）
-- [x] 認証方式：Cloudflare Access。ブラウザは本人の Google ログイン、Android はサービストークン。
+- [x] 認証方式：Cloudflare Access。本人の Google ログイン（PWA もブラウザなので同じ）。
       Worker は `Cf-Access-Jwt-Assertion` を信用せず、team の JWKS で署名・iss・aud・exp を検証する
 - [x] AI モデル：Gemini Flash。Worker から Gemini API を呼ぶ（キーは Workers secret）
 - [x] Flickr：Pro（保存枚数の上限なし）。個人利用
+- [x] 端末アプリ：Android ネイティブではなく PWA（LAN の TM-L100 へブラウザから印刷できることを実機で確認、2026-09-23）
 - [ ] 類似の先行実装調査（ユーザーが後で実施予定。見つかれば設計を見直す）

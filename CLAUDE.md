@@ -1,10 +1,10 @@
 # stash-qr — 入れ子コンテナ在庫管理
 
-袋・箱・棚に入れた物品を Android で撮影 → AI 提案 → ユーザー確定 → QR ラベル印刷で管理する。
+袋・箱・棚に入れた物品をスマホ (PWA) で撮影 → AI 提案 → ユーザー確定 → QR ラベル印刷で管理する。
 数量管理（ケーブル等の本数）と個体管理（製品ラベルの メーカー・型番・シリアル）の 2 種類。
 
 - `worker/` Cloudflare Workers (Rust / workers-rs) + D1。API・Flickr 連携・閲覧ページ
-- `android/` Kotlin + Compose。CameraX / ML Kit (QR) / Epson ePOS2 (TM-L100 印刷)
+- `web/` PWA (Worker から配信)。印刷は LAN の TM-L100 へ ePOS-Print XML を直接送る
 - 公開ドメイン `stash.mtamaramu.com` (QR に焼く)・認証は Cloudflare Access・AI は Gemini Flash
 - 設計の全文（スキーマ・API・AI 出力形式・フェーズ・未決事項）は **`docs/design.md`**。着手前に読む
 
