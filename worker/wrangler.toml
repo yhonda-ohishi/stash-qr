@@ -22,5 +22,6 @@ migrations_dir = "migrations"
 # ACCESS_ISSUER = https://<team>.cloudflareaccess.com、ACCESS_AUD = Access アプリの AUD タグ。
 # どちらも秘密ではない (JWT の中にそのまま入っている値)。
 [vars]
-ACCESS_ISSUER = ""
-ACCESS_AUD = ""
+# Access アプリ "stash-qr"。Google ログインで本人の email だけ許可。
+ACCESS_ISSUER = "https://mtamaramu.cloudflareaccess.com"
+ACCESS_AUD = "dc7fb2c8c7360e23af4c0154f3500978718ac19e341f8ee7ee1fdabcfa2f586c"

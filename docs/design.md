@@ -149,6 +149,8 @@ CREATE TABLE photos (
   1. Zero Trust → Access → Applications で `stash.mtamaramu.com` の Self-hosted アプリを作る
   2. ポリシー: 本人の email を Allow、Android 用のサービストークンを Service Auth
   3. アプリの AUD タグと `https://<team>.cloudflareaccess.com` を `worker/wrangler.toml` の `[vars]` に書く（秘密ではない）
+  - 済: アプリ `stash-qr`（team `mtamaramu`、Google ログイン、本人の email のみ許可）を作成し `[vars]` に記入済み。
+    Android 用サービストークンと Service Auth ポリシーはフェーズ 4 で足す。
 
 ## API
 

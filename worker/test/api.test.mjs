@@ -88,7 +88,8 @@ before(async () => {
     stdio: "ignore",
   });
   base = await startDev({ ACCESS_ISSUER: issuer, ACCESS_AUD: AUD });
-  bareBase = await startDev({});
+  // wrangler.toml の [vars] には本番の値が入っているので、空で上書きして未設定を作る
+  bareBase = await startDev({ ACCESS_ISSUER: "", ACCESS_AUD: "" });
 });
 
 after(() => {
