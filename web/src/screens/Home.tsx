@@ -61,6 +61,10 @@ export function Home({ query }: ScreenProps) {
         <a href="/app/move">2 スキャン移動</a>
       </section>
 
+      <section>
+        <a href="/app/label">ラベルを撮って個体登録 (場所なし)</a>
+      </section>
+
       <PendingPanel />
     </main>
   );
