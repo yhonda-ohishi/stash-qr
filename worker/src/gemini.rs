@@ -17,6 +17,11 @@ use worker::*;
 
 const ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
 
+/// generationConfig.maxOutputTokens。コンテナ写真は品目ごとに attrs を返すため長く、
+/// 2048 だと JSON が途中で切れて `gemini output is not JSON` になっていた
+/// (2026-09-23 本番。finishReason は MAX_TOKENS)。ラベル判定は短いので今まで気づかなかった。
+const MAX_OUTPUT_TOKENS: u32 = 8192;
+
 pub struct Gemini {
     api_key: String,
     pub model: String,
@@ -96,27 +101,38 @@ fn request_body(image: &[u8], mime: &str, prompt: &str, schema: &Value) -> Value
             "temperature": 0.0,
             "responseMimeType": "application/json",
             "responseSchema": schema,
-            "maxOutputTokens": 2048
+            "maxOutputTokens": MAX_OUTPUT_TOKENS
         }
     })
 }
 
 /// `candidates[0].content.parts[0].text` に入っている JSON 文字列を取り出して読む。
 fn extract_json(parsed: &Value) -> std::result::Result<Value, String> {
+    let finish_reason = parsed
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str);
     let text = parsed
         .pointer("/candidates/0/content/parts/0/text")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            let reason = parsed
-                .pointer("/candidates/0/finishReason")
-                .or_else(|| parsed.pointer("/promptFeedback/blockReason"))
-                .and_then(Value::as_str)
+            let reason = finish_reason
+                .or_else(|| {
+                    parsed
+                        .pointer("/promptFeedback/blockReason")
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("no candidates");
             format!("gemini returned no text ({reason})")
         })?;
     serde_json::from_str(text).map_err(|_| {
-        let head: String = text.chars().take(200).collect();
-        format!("gemini output is not JSON: {head}")
+        // MAX_TOKENS で切れた JSON はここで parse に失敗する (`text` 自体は取れている)。
+        // JSON の構文エラーと区別できるよう finishReason を先に見る。
+        if finish_reason == Some("MAX_TOKENS") {
+            "gemini output was truncated (MAX_TOKENS)".to_string()
+        } else {
+            let head: String = text.chars().take(200).collect();
+            format!("gemini output is not JSON: {head}")
+        }
     })
 }
 
@@ -271,6 +287,7 @@ mod tests {
             b["generationConfig"]["responseSchema"]["properties"]["serial"]["nullable"],
             true
         );
+        assert_eq!(b["generationConfig"]["maxOutputTokens"], MAX_OUTPUT_TOKENS);
     }
 
     #[test]
@@ -290,6 +307,25 @@ mod tests {
             extract_json(&prose)
                 .unwrap_err()
                 .starts_with("gemini output is not JSON")
+        );
+
+        // 本番 (2026-09-23) で見えた形: finishReason=MAX_TOKENS で JSON が途中で切れている。
+        let truncated = json!({
+            "candidates": [{
+                "content": { "parts": [{ "text": "{\"stock\":[{\"category\":\"cable\"" }] },
+                "finishReason": "MAX_TOKENS"
+            }]
+        });
+        assert_eq!(
+            extract_json(&truncated).unwrap_err(),
+            "gemini output was truncated (MAX_TOKENS)"
+        );
+
+        // text が無く finishReason だけ MAX_TOKENS の場合も区別したメッセージになる。
+        let no_text = json!({ "candidates": [{ "finishReason": "MAX_TOKENS" }] });
+        assert_eq!(
+            extract_json(&no_text).unwrap_err(),
+            "gemini returned no text (MAX_TOKENS)"
         );
     }
 }
