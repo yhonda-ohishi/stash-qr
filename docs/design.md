@@ -184,7 +184,7 @@ CREATE TABLE photos (
 - `GET /api/assets/:id` / `PATCH /api/assets/:id`（状態変更・メモ）
 - `POST /api/assets/:id/move` `{ container_id }`
 - `GET /api/item-types?q=` / `POST /api/item-types`
-- `GET /api/search?q=` 品目名・型番・シリアルで検索し、場所をフルパスで返す
+- `GET /api/search?q=` 品目名・型番・シリアルで検索し、場所をフルパスで返す。q は任意。空なら今ある全品目 (stock・個体それぞれ 1000 行まで、超えたら `truncated: true`)。廃棄の個体は含めない
 - `POST /api/photos?kind=&container_id=&asset_id=&taken_at=` 本文は画像そのもの。Flickr へ非公開で保存。失敗しても 201（status=pending）
 - `PUT /api/photos/:id/image` 送信待ちの写真を送り直す（送信済みなら何もしない）
 - `GET /api/photos?status=pending` 送信待ちの一覧（スマホは Flickr に入るまで画像を消さず、ここを見て送り直す）
@@ -208,6 +208,7 @@ CREATE TABLE photos (
 
 - URL：画面は `/app/` の下（ホーム `/app`、撮影して登録 `/app/shoot`（`?parent=<id>` 任意）、コンテナ `/app/c/<id>`、個体 `/app/a/<id>`、2 スキャン移動 `/app/move`）。manifest の start_url も `/app/`。
 - ホームの「場所」節：一番上のコンテナ一覧（名前・種別・直下の子/本数/個体の数）。コンテナ画面には編集（PATCH）・削除（DELETE、空でなければ 409 をそのまま表示）を出す
+- 検索モード（タブの「検索」または `?q=`）：開いただけで `GET /api/search` の全品目一覧を取り、品目ごとに合計本数（個体管理なら台数）と置き場所をカードで出す。文字を打つとサーバーへ投げ直さずその場で絞り込む（`web/src/search.ts` の `groupByItem`/`filterGroups`）。1000 行の上限で `truncated` のときは文字で絞るよう促し、文字があるときだけサーバーへ絞り込みを投げる
 - 撮影して登録：ホーム/コンテナ画面の「撮影して登録」(`/app/shoot`) で写真を撮ると、種別 `bag` の仮コンテナを `POST /api/containers` で先に作り、そのままコンテナ判定 (`/app/c/<id>/judge?new=1`) へ渡す（画像は URL に載せず `web/src/shoot.ts` のモジュール内変数で 1 回だけ受け渡す）。
   判定画面は `?new=1` のとき撮影の段を飛ばして自動送信する。編集リストの上の種別・名前欄は判定画面には常に出す（`?new=1`・`?resume=` に限らない）。新規・再開（`fresh`）は AI の proposal.container が初期値。それ以外の既存コンテナの「撮影して判定」は今の種別・名前が初期値（種別は今のまま、名前が空なら AI の提案）で、編集後の値が今と変わったときだけ確定の final.container でコンテナに書き込む（同じ値での書き換えと updated_at の空回りを避ける）。`?new=1`・`?resume=` は確定後 `?created=1` でコンテナ画面のラベル印刷ボタンを目立たせる。
   AI 判定に失敗したときは、作ったばかりの空のコンテナを「削除して撮り直す」(`DELETE`、空なので通る) で消せる（`?new=1`・`?resume=` のときだけ）

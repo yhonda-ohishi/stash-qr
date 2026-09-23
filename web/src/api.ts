@@ -114,13 +114,16 @@ export type SearchStockHit = {
 };
 export type SearchAssetHit = {
   id: string;
+  item_type_id: string;
+  category: string;
+  item_type_name: string;
   maker: string | null;
   model: string | null;
   serial: string | null;
   container_id: string | null;
   breadcrumb: Crumb[];
 };
-export type SearchResult = { stock: SearchStockHit[]; assets: SearchAssetHit[] };
+export type SearchResult = { stock: SearchStockHit[]; assets: SearchAssetHit[]; truncated: boolean };
 
 // ---------------------------------------------------------------------------
 // 失敗
@@ -268,8 +271,9 @@ export async function listItemTypes(q = ""): Promise<ItemType[]> {
   return r.item_types;
 }
 
+/** q が空なら `?q=` を付けずに呼ぶ (全品目一覧)。 */
 export function search(q: string): Promise<SearchResult> {
-  return request("GET", `/api/search?q=${seg(q)}`);
+  return request("GET", q ? `/api/search?q=${seg(q)}` : "/api/search");
 }
 
 // ---------------------------------------------------------------------------

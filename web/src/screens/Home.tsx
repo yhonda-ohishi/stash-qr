@@ -6,6 +6,7 @@ import { counts, discardUnsent, onPendingChange, resendAll } from "../pending";
 import { appPath } from "../qr";
 import { QrScanner } from "../QrScanner";
 import { navigate, type Query, type ScreenProps } from "../router";
+import { filterGroups, groupByItem, type ItemGroup } from "../search";
 import { Crumbs, errorText, useLoad } from "../ui";
 
 /** `query` から `key` だけ外した `/app` の URL (他のキーは残す)。 */
@@ -18,8 +19,14 @@ export function withoutParam(query: Query, key: string): string {
 
 export function Home({ query }: ScreenProps) {
   const [scanning, setScanning] = useState(query.scan === "1");
+  // 検索モード：タブの「検索」(search=1) を押したか、?q= があるとき。?search=1 は
+  // フォーカス後に URL から外れる (withoutParam) ので、モードは component の state で持つ。
+  const [searching, setSearching] = useState(query.search === "1" || !!query.q);
   const [q, setQ] = useState(query.q ?? "");
-  const [result, setResult] = useState<SearchResult | null>(null);
+  // 検索モードに入ったら 1 回だけ取る全品目 (q="" の応答)。以後は打つたびに filterGroups でその場で絞る。
+  const [all, setAll] = useState<SearchResult | null>(null);
+  // all.truncated のときだけ、文字があればサーバーに絞り込みを投げた結果
+  const [queryResult, setQueryResult] = useState<SearchResult | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -31,22 +38,62 @@ export function Home({ query }: ScreenProps) {
   // タブバーの検索を押すと ?search=1 が付く。フォーカスしたら外す (もう一度押しても再フォーカスするように)
   useEffect(() => {
     if (query.search !== "1") return;
+    setSearching(true);
     searchRef.current?.focus();
     navigate(withoutParam(query, "search"), { replace: true });
   }, [query.search]);
 
-  // 戻るで帰ってきたときに結果を出し直す (?q= をアドレスに残している)
+  // 戻る/進むで ?q= が変わったら入力欄も追いつく (URL が正)
   useEffect(() => {
-    if (!query.q) return;
-    search(query.q).then(setResult, (e) => setSearchError(errorText(e)));
+    const urlQ = query.q ?? "";
+    if (urlQ === q) return;
+    setQ(urlQ);
+    if (urlQ) setSearching(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query.q]);
+
+  // 検索モードに入ったら全件を 1 回取る
+  useEffect(() => {
+    if (!searching || all) return;
+    setSearchError(null);
+    search("").then(setAll, (e) => setSearchError(errorText(e)));
+  }, [searching, all]);
+
+  const text = q.trim();
+  const truncated = all?.truncated ?? false;
+
+  // 全件が truncated のときだけ、文字があればサーバー側で絞り込む
+  useEffect(() => {
+    if (!truncated || !text) {
+      setQueryResult(null);
+      return;
+    }
+    let cancelled = false;
+    search(text).then(
+      (r) => !cancelled && setQueryResult(r),
+      (e) => !cancelled && setSearchError(errorText(e)),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [truncated, text]);
+
+  const groups: ItemGroup[] | null = !searching
+    ? null
+    : truncated && text
+      ? queryResult && groupByItem(queryResult)
+      : all && filterGroups(groupByItem(all), text);
+
+  const enterSearch = (value: string) => {
+    setSearchError(null);
+    setQ(value);
+    setSearching(true);
+    navigate(value ? `/app?q=${encodeURIComponent(value)}` : "/app", { replace: true });
+  };
 
   const onSearch = (e: Event) => {
     e.preventDefault();
-    const text = q.trim();
-    if (!text) return;
-    setSearchError(null);
-    navigate(`/app?q=${encodeURIComponent(text)}`, { replace: true });
+    enterSearch(q.trim());
   };
 
   const stopScanning = () => {
@@ -92,12 +139,15 @@ export function Home({ query }: ScreenProps) {
             type="search"
             placeholder="品目名・型番・シリアル"
             value={q}
-            onInput={(e) => setQ(e.currentTarget.value)}
+            onInput={(e) => enterSearch(e.currentTarget.value)}
           />
           <button type="submit">探す</button>
         </form>
         {searchError && <p class="error">{searchError}</p>}
-        {result && <SearchResults result={result} />}
+        {searching && truncated && (
+          <p class="warn">多いので全部は出していません。文字で絞ってください。</p>
+        )}
+        {searching && groups && <ItemGroupList groups={groups} />}
       </section>
 
       <TopContainers />
@@ -165,27 +215,45 @@ function ContainerSummary({ c }: { c: ContainerListItem }) {
   return <small class="muted"> · {parts.join(" / ")}</small>;
 }
 
-function SearchResults({ result }: { result: SearchResult }) {
-  if (!result.stock.length && !result.assets.length) return <p>見つかりません</p>;
+/** 品目一覧 (検索モード)。カード 1 枚を描く部品 (ItemCard) を 1 つにまとめておく (#c9-25 で画像を足す予定)。 */
+function ItemGroupList({ groups }: { groups: ItemGroup[] }) {
+  if (!groups.length) return <p>見つかりません</p>;
   return (
     <ul class="list">
-      {result.stock.map((s) => (
-        <li key={`${s.container_id}:${s.item_type_id}`}>
-          <a href={`/app/c/${encodeURIComponent(s.container_id)}`}>
-            {s.item_type_name} × {s.qty}
-          </a>
-          <Crumbs items={s.breadcrumb} />
-        </li>
-      ))}
-      {result.assets.map((a) => (
-        <li key={a.id}>
-          <a href={`/app/a/${encodeURIComponent(a.id)}`}>
-            {[a.maker, a.model, a.serial].filter(Boolean).join(" / ") || a.id}
-          </a>
-          {a.container_id ? <Crumbs items={a.breadcrumb} /> : <p class="crumb">持ち出し中</p>}
-        </li>
+      {groups.map((g) => (
+        <ItemCard key={g.itemTypeId} group={g} />
       ))}
     </ul>
+  );
+}
+
+function ItemCard({ group }: { group: ItemGroup }) {
+  return (
+    <li>
+      <div class="row">
+        <strong>
+          {group.name} <small class="muted">({group.category})</small>
+        </strong>
+        <span class="grow" />
+        <span>{group.tracking === "quantity" ? `合計 ${group.total} 本` : `${group.total} 台`}</span>
+      </div>
+      <ul class="list">
+        {group.places.map((p) =>
+          p.kind === "quantity" ? (
+            <li key={p.containerId}>
+              <Crumbs items={p.breadcrumb} /> {p.qty} 本
+            </li>
+          ) : (
+            <li key={p.assetId}>
+              <a href={`/app/a/${encodeURIComponent(p.assetId)}`}>
+                {[p.maker, p.model].filter(Boolean).join(" / ") || p.assetId}
+              </a>
+              {p.containerId ? <Crumbs items={p.breadcrumb} /> : <p class="crumb">持ち出し中</p>}
+            </li>
+          ),
+        )}
+      </ul>
+    </li>
   );
 }
 
