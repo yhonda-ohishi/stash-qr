@@ -152,6 +152,12 @@ CREATE TABLE photos (
   - 済: アプリ `stash-qr`（team `mtamaramu`、Google ログイン、本人の email のみ許可）を作成し `[vars]` に記入済み。
     Android 用サービストークンと Service Auth ポリシーはフェーズ 4 で足す。
 
+## デプロイ
+
+- main に入ると `.github/workflows/deploy.yml` が本番へ出す（staging なし）。順番は D1 migration（remote）→ `wrangler deploy` → 未ログインのリクエストが Access で止まるかの確認。
+- PR は `ci.yml` の `test` が green なら ippoan/ci-workflows の auto-merge で squash merge される。
+- 本番 D1 は `stash-qr`（apac）。secret は GCP Secret Manager（`cloudsql-sv`）から repo secret へ流し込んだもの（`CLOUDFLARE_API_TOKEN` / `CI_APP_ID` / `CI_APP_PRIVATE_KEY`）。
+
 ## API
 
 - `POST /api/containers` 作成（parent_id 任意）
