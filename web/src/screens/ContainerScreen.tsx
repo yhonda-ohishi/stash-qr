@@ -81,7 +81,7 @@ export function ContainerScreen({ params, query }: ScreenProps) {
       ) : (
         <p class="muted">(なし)</p>
       )}
-      <a class="button" href={`/app/shoot?parent=${encodeURIComponent(d.container.id)}`}>
+      <a class="button primary" href={`/app/shoot?parent=${encodeURIComponent(d.container.id)}`}>
         この中に撮影して登録
       </a>{" "}
       <a href={`/app/new?parent=${encodeURIComponent(d.container.id)}`}>この中に写真なしで作る</a>

@@ -1,16 +1,38 @@
-import { useEffect, useState } from "preact/hooks";
+import { Camera } from "lucide-preact";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { listContainers, search, type ContainerListItem, type SearchResult } from "../api";
 import { counts, discardUnsent, onPendingChange, resendAll } from "../pending";
 import { appPath } from "../qr";
 import { QrScanner } from "../QrScanner";
-import { navigate, type ScreenProps } from "../router";
+import { navigate, type Query, type ScreenProps } from "../router";
 import { Crumbs, errorText, useLoad } from "../ui";
 
+/** `query` から `key` だけ外した `/app` の URL (他のキーは残す)。 */
+export function withoutParam(query: Query, key: string): string {
+  const params = new URLSearchParams(query);
+  params.delete(key);
+  const qs = params.toString();
+  return qs ? `/app?${qs}` : "/app";
+}
+
 export function Home({ query }: ScreenProps) {
-  const [scanning, setScanning] = useState(false);
+  const [scanning, setScanning] = useState(query.scan === "1");
   const [q, setQ] = useState(query.q ?? "");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // タブバーの QR を押すと ?scan=1 が付く。ホームを作り直さずに (main.tsx が key={path}) 反応する
+  useEffect(() => {
+    setScanning(query.scan === "1");
+  }, [query.scan]);
+
+  // タブバーの検索を押すと ?search=1 が付く。フォーカスしたら外す (もう一度押しても再フォーカスするように)
+  useEffect(() => {
+    if (query.search !== "1") return;
+    searchRef.current?.focus();
+    navigate(withoutParam(query, "search"), { replace: true });
+  }, [query.search]);
 
   // 戻るで帰ってきたときに結果を出し直す (?q= をアドレスに残している)
   useEffect(() => {
@@ -26,32 +48,44 @@ export function Home({ query }: ScreenProps) {
     navigate(`/app?q=${encodeURIComponent(text)}`, { replace: true });
   };
 
+  const stopScanning = () => {
+    if (query.scan === "1") navigate(withoutParam(query, "scan"), { replace: true });
+    else setScanning(false);
+  };
+
   return (
     <main>
       <h1>stash-qr</h1>
 
       <section>
         <a class="button primary shoot" href="/app/shoot">
+          <Camera size={22} />
           撮影して登録
         </a>
       </section>
 
-      <section>
+      <section class="row">
         {scanning ? (
           <>
             <QrScanner onResult={(t) => navigate(appPath(t))} />
-            <button onClick={() => setScanning(false)}>やめる</button>
+            <button onClick={stopScanning}>やめる</button>
           </>
         ) : (
-          <button class="primary" onClick={() => setScanning(true)}>
-            QR を読む
-          </button>
+          <>
+            <button class="grow" onClick={() => setScanning(true)}>
+              QR を読む
+            </button>
+            <a class="button grow" href="/app/new">
+              写真なしで作る
+            </a>
+          </>
         )}
       </section>
 
       <section>
         <form onSubmit={onSearch} class="row">
           <input
+            ref={searchRef}
             type="search"
             placeholder="品目名・型番・シリアル"
             value={q}
@@ -66,15 +100,15 @@ export function Home({ query }: ScreenProps) {
       <TopContainers />
 
       <section>
-        <a href="/app/move">2 スキャン移動</a>
-      </section>
-
-      <section>
-        <a href="/app/label">ラベルを撮って個体登録 (場所なし)</a>
-      </section>
-
-      <section>
-        <a href="/app/settings">設定 (ラベルプリンタ)</a>
+        <h2>その他</h2>
+        <ul class="list">
+          <li>
+            <a href="/app/move">2 スキャン移動</a>
+          </li>
+          <li>
+            <a href="/app/label">ラベルを撮って個体登録 (場所なし)</a>
+          </li>
+        </ul>
       </section>
 
       <PendingPanel />
@@ -87,9 +121,6 @@ function TopContainers() {
   return (
     <section>
       <h2>場所</h2>
-      <p class="muted">
-        <a href="/app/new">写真なしで作る (棚・部屋など)</a>
-      </p>
       {load.error && <p class="error">{errorText(load.error)}</p>}
       {load.data && !load.data.length && <p class="muted">まだコンテナがありません</p>}
       {load.data && load.data.length > 0 && (

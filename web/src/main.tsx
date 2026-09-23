@@ -2,6 +2,7 @@ import { render } from "preact";
 import { resendAll } from "./pending";
 import { interceptLinks, matchRoute, useLocation } from "./router";
 import { routes } from "./routes";
+import { TabBar } from "./ui";
 import "./style.css";
 
 function App() {
@@ -19,12 +20,8 @@ function App() {
   // パスが変わったら画面を作り直す (/app/c/A → /app/c/B で前の状態を持ち越さない)
   return (
     <>
-      {path !== "/" && path !== "/app" && path !== "/app/" && (
-        <nav class="top">
-          <a href="/app">← ホーム</a>
-        </nav>
-      )}
       <Screen key={path} params={hit.params} query={query} />
+      <TabBar path={path} query={query} />
     </>
   );
 }

@@ -1,8 +1,10 @@
 // 画面が共用する小さな部品。
+import { Camera, House, ScanLine, Search, Settings } from "lucide-preact";
 import { Fragment } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { ApiError, photoUrl, type Crumb, type PhotoRef } from "./api";
 import { buildLabel, getPrinterIp, sendToPrinter } from "./print";
+import type { Query } from "./router";
 
 export function crumbLabel(c: { kind: string; name: string | null }): string {
   return c.name || c.kind;
@@ -79,6 +81,47 @@ export function PrintButton({ kind, id, lines }: { kind: "c" | "a"; id: string; 
       </button>
       {status && <span class={status === "印刷しました" ? undefined : "error"}>{status}</span>}
     </span>
+  );
+}
+
+type Tab = "home" | "qr" | "shoot" | "search" | "settings";
+
+function activeTab({ path, query }: { path: string; query: Query }): Tab {
+  if (query.scan === "1") return "qr";
+  if (query.search === "1") return "search";
+  if (path === "/app/shoot") return "shoot";
+  if (path === "/app/settings") return "settings";
+  return "home";
+}
+
+/** 下部タブバー。ホーム / QR / 撮影 (中央・大きい丸) / 検索 / 設定。 */
+export function TabBar({ path, query }: { path: string; query: Query }) {
+  const active = activeTab({ path, query });
+  const cls = (tab: Tab) => (tab === active ? "active" : undefined);
+  return (
+    <nav class="tabbar">
+      <a class={cls("home")} href="/app">
+        <House size={22} />
+        <span>ホーム</span>
+      </a>
+      <a class={cls("qr")} href="/app?scan=1">
+        <ScanLine size={22} />
+        <span>QR</span>
+      </a>
+      <a class={`tab-shoot ${cls("shoot") ?? ""}`} href="/app/shoot">
+        <span class="tab-shoot-circle">
+          <Camera size={26} />
+        </span>
+      </a>
+      <a class={cls("search")} href="/app?search=1">
+        <Search size={22} />
+        <span>検索</span>
+      </a>
+      <a class={cls("settings")} href="/app/settings">
+        <Settings size={22} />
+        <span>設定</span>
+      </a>
+    </nav>
   );
 }
 
