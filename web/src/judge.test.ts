@@ -113,17 +113,41 @@ describe("initialRows", () => {
     expect(f.ok && f.final.assets).toEqual(["A1", "A2"]);
   });
 
-  test("withContainer: AI の提案 (proposal.container) を初期値にする。無ければ bag / 空", () => {
+  test("fresh (新規・再開): AI の提案 (proposal.container) を初期値にする。無ければ bag / 空", () => {
     const withProposal = initialRows(result({ proposal: { container: { kind: "bag", name: "USB ケーブルの袋" } } }), {
-      withContainer: true,
+      current: { kind: "box", name: "元の名前" },
+      fresh: true,
     });
     expect(withProposal.container).toEqual({ kind: "bag", name: "USB ケーブルの袋" });
 
-    const withoutProposal = initialRows(result({ proposal: {} }), { withContainer: true });
+    const withoutProposal = initialRows(result({ proposal: {} }), { fresh: true });
     expect(withoutProposal.container).toEqual({ kind: "bag", name: "" });
+  });
 
-    // withContainer を付けなければ container 行は無い (通常の撮影して判定)
-    expect(initialRows(result({ proposal: { container: { kind: "box", name: "x" } } })).container).toBeUndefined();
+  test("既存コンテナの撮り直し: current.name があれば current の種別・名前のまま (提案があっても)", () => {
+    const s = initialRows(result({ proposal: { container: { kind: "bag", name: "AI の名前" } } }), {
+      current: { kind: "box", name: "今の名前" },
+      fresh: false,
+    });
+    expect(s.container).toEqual({ kind: "box", name: "今の名前" });
+  });
+
+  test("既存コンテナの撮り直し: current.name が空なら種別は current のまま、名前は AI の提案", () => {
+    const s = initialRows(result({ proposal: { container: { kind: "bag", name: "AI の名前" } } }), {
+      current: { kind: "box", name: "" },
+      fresh: false,
+    });
+    expect(s.container).toEqual({ kind: "box", name: "AI の名前" });
+  });
+
+  test("既存コンテナの撮り直し: current.name が空・提案に container が無ければ current の種別と空", () => {
+    const s = initialRows(result({ proposal: {} }), { current: { kind: "box", name: "  " }, fresh: false });
+    expect(s.container).toEqual({ kind: "box", name: "" });
+  });
+
+  test("current が無ければ fresh: true と同じ扱い", () => {
+    const s = initialRows(result({ proposal: { container: { kind: "bag", name: "AI の名前" } } }), { fresh: false });
+    expect(s.container).toEqual({ kind: "bag", name: "AI の名前" });
   });
 });
 
@@ -231,6 +255,30 @@ describe("buildFinal", () => {
     // container 無しの通常の確定は final にキー自体が無い (前の指示までと同じ)
     const noContainer = buildFinal({ stock: [], assets: [] });
     expect(noContainer.ok && noContainer.final).not.toHaveProperty("container");
+  });
+
+  test("container: fresh なら current と同じでも final.container を常に載せる", () => {
+    const f = buildFinal(
+      { stock: [], assets: [], container: { kind: "bag", name: "今の名前" } },
+      { current: { kind: "bag", name: "今の名前" }, fresh: true },
+    );
+    expect(f).toEqual({ ok: true, final: { stock: [], assets: [], container: { kind: "bag", name: "今の名前" } } });
+  });
+
+  test("container: 既存コンテナの撮り直しで変更が無ければ final に container キーが無い", () => {
+    const f = buildFinal(
+      { stock: [], assets: [], container: { kind: "bag", name: "今の名前" } },
+      { current: { kind: "bag", name: "今の名前" }, fresh: false },
+    );
+    expect(f.ok && f.final).not.toHaveProperty("container");
+  });
+
+  test("container: 既存コンテナの撮り直しで名前を変えれば final.container が載る", () => {
+    const f = buildFinal(
+      { stock: [], assets: [], container: { kind: "bag", name: "新しい名前" } },
+      { current: { kind: "bag", name: "今の名前" }, fresh: false },
+    );
+    expect(f).toEqual({ ok: true, final: { stock: [], assets: [], container: { kind: "bag", name: "新しい名前" } } });
   });
 
   test("new_assets: 「個体として登録」の行だけを trim・空は null にして載せる", () => {
