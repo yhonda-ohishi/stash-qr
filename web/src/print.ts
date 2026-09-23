@@ -11,8 +11,12 @@ export const PRINTER_IP_KEY = "stash-qr:printer-ip";
 const MAX_LINES = 3;
 /** ラベル 1 行の文字数の上限 (実機で見た目を確かめて調整する)。 */
 const LINE_MAX_CHARS = 20;
-/** ラベル下の余白 (用紙送りの行数)。実機の見た目で調整する。 */
-const BOTTOM_FEED_LINES = 4;
+/** ラベル下の余白 (ドット、約 8 ドット/mm)。2026-09-23 に実機で刷り比べて 32 (上の余白と揃う) に決めた。 */
+const BOTTOM_FEED_DOTS = 32;
+
+/** 前のラベルが取り除かれるまで送り直す間隔 (ミリ秒) と、上限回数 (90 秒ぶん)。 */
+const EJECT_RETRY_INTERVAL_MS = 3000;
+const EJECT_RETRY_MAX = 30;
 
 export function getPrinterIp(): string {
   try {
@@ -62,31 +66,56 @@ export function printSucceeded(responseXml: string): boolean {
 }
 
 /** 応答 XML から失敗コード (`code="..."`) を拾う。無ければ null。 */
-function printCode(responseXml: string): string | null {
+export function responseCode(responseXml: string): string | null {
   return /<response\b[^>]*\bcode="([^"]*)"/.exec(responseXml)?.[1] ?? null;
 }
 
 const CONNECT_HINT = (ip: string) =>
   `プリンタにつながりません。設定画面から ${certUrl(ip)} を開いて証明書を通してください`;
 
+const EJECT_HINT = "前のラベルが取り除かれませんでした。取ってからもう一度押してください";
+
+export type SendToPrinterOptions = {
+  /** 前のラベルの取り除き待ち (ERROR_WAIT_EJECT) で送り直しているあいだ、待つたびに呼ばれる。 */
+  onWaitEject?: () => void;
+  /** テスト用の差し替え。既定は fetch / setTimeout。 */
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+};
+
 /**
  * `innerXml` (ePOS-Print の中身) をプリンタへ送る。成功したら解決、失敗なら reject。
  * 証明書を通していない・LAN が違うなど通信そのものが失敗したときは案内文にする。
+ * 前のラベルが出口に残っていると `ERROR_WAIT_EJECT` で断られる (紙除去検知) ので、
+ * 取り除かれるまで一定間隔で同じ XML を送り直す。
  */
-export async function sendToPrinter(ip: string, innerXml: string): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(`https://${ip}/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`, {
-      method: "POST",
-      headers: { "Content-Type": "text/xml; charset=utf-8" },
-      body: envelope(innerXml),
-    });
-  } catch {
-    throw new Error(CONNECT_HINT(ip));
-  }
-  const body = await res.text();
-  if (!printSucceeded(body)) {
-    const code = printCode(body);
+export async function sendToPrinter(ip: string, innerXml: string, opts: SendToPrinterOptions = {}): Promise<void> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const body = envelope(innerXml);
+  const url = `https://${ip}/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`;
+
+  for (let attempt = 1; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/xml; charset=utf-8" },
+        body,
+      });
+    } catch {
+      throw new Error(CONNECT_HINT(ip));
+    }
+    const resText = await res.text();
+    if (printSucceeded(resText)) return;
+
+    const code = responseCode(resText);
+    if (code === "ERROR_WAIT_EJECT") {
+      if (attempt >= EJECT_RETRY_MAX) throw new Error(EJECT_HINT);
+      opts.onWaitEject?.();
+      await sleep(EJECT_RETRY_INTERVAL_MS);
+      continue;
+    }
     throw new Error(`印刷に失敗しました${code ? ` (${code})` : ""}`);
   }
 }
@@ -137,7 +166,7 @@ export function buildLabel({ kind, id, lines }: LabelInput): string {
     `<text dw="true" dh="true">${esc(id)}&#10;</text>` +
     '<text dw="false" dh="false"/>' +
     body +
-    `<feed line="${BOTTOM_FEED_LINES}"/><cut type="feed"/>`
+    `<feed unit="${BOTTOM_FEED_DOTS}"/><cut type="feed"/>`
   );
 }
 

@@ -23,7 +23,9 @@ export function SettingsScreen() {
     setError(null);
     setResult(null);
     try {
-      await sendToPrinter(ip.trim(), buildTestLabel());
+      await sendToPrinter(ip.trim(), buildTestLabel(), {
+        onWaitEject: () => setResult("前のラベルを取ってください"),
+      });
       setResult("印刷しました");
     } catch (e) {
       setError(errorText(e));

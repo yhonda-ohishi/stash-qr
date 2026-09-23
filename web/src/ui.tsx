@@ -61,7 +61,9 @@ export function PrintButton({ kind, id, lines }: { kind: "c" | "a"; id: string; 
     setBusy(true);
     setStatus(null);
     try {
-      await sendToPrinter(ip, buildLabel({ kind, id, lines }));
+      await sendToPrinter(ip, buildLabel({ kind, id, lines }), {
+        onWaitEject: () => setStatus("前のラベルを取ってください"),
+      });
       setStatus("印刷しました");
     } catch (e) {
       setStatus(errorText(e));
