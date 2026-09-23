@@ -24,8 +24,8 @@ export function Crumbs({ items, current }: { items: Crumb[]; current?: boolean }
   );
 }
 
-export function Thumbs({ photos }: { photos: PhotoRef[] | undefined }) {
-  if (!photos?.length) return null;
+export function Thumbs({ photos }: { photos: PhotoRef[] }) {
+  if (!photos.length) return null;
   return (
     <div class="thumbs">
       {photos.map((p) => (

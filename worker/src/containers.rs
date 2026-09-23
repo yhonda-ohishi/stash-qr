@@ -11,6 +11,7 @@ use worker::*;
 
 use crate::db::{self, NOW, int, opt_text, text};
 use crate::id::{CONTAINER_ID_LEN, ROW_ID_LEN, new_id, normalize_container_id};
+use crate::photos::{self, Owner};
 use crate::{Ctx, error, json, read_object};
 
 /// 親をたどる深さの上限。壊れたデータで CTE が止まらなくなるのを防ぐ保険。
@@ -260,6 +261,8 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
     let Some(view) = load_view(&d1, &id).await? else {
         return error(404, "container not found");
     };
+    // 写真は JSON のときだけ引く (load_view は判定・確定も使うので増やさない)。
+    let photos = photos::list_for(&d1, Owner::Container(&id)).await?;
     json(
         200,
         &serde_json::json!({
@@ -272,6 +275,7 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
                 "stock": view.totals_stock,
                 "asset_count": view.asset_count,
             },
+            "photos": photos,
         }),
     )
 }

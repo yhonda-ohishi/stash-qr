@@ -47,8 +47,8 @@ export type ContainerDetail = {
   stock: StockLine[];
   assets: AssetLine[];
   totals: { stock: StockLine[]; asset_count: number };
-  /** いまの worker は返さない。返すようになれば画面にサムネイルが出る。 */
-  photos?: PhotoRef[];
+  /** アップロード済みの写真 (新しい順に最大 20 件) */
+  photos: PhotoRef[];
 };
 
 export type AssetStatus = "in_stock" | "lent" | "broken" | "disposed";
