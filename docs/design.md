@@ -135,7 +135,7 @@ CREATE TABLE photos (
 - 撮影画像を受け取ったら、**AI 判定と Flickr アップロードを並行実行**。判定をアップロード待ちにしない。
 - OAuth 1.0a の署名は Worker 内で行う。
 - マシンタグで逆引きできるようにする：`<ns>:container=<id>`、`<ns>:asset=<id>`、`<ns>:kind=<kind>`。
-  `<ns>` はリポジトリ名に合わせる。Flickr の namespace は英数字と `_` のみ（`-` 不可）なので候補は `stashqr`（未確定）。
+  `<ns>` は `stashqr`（Flickr の namespace は英数字と `_` のみで `-` 不可のため、リポジトリ名から `-` を抜いた）。
 - アップロード失敗時も判定・確定は止めない。photos に記録できなかった分は再送キューで後追い。
 - 画像を表示するときは Worker が Flickr から取得して返す（プロキシ）。
 
@@ -175,7 +175,7 @@ CREATE TABLE photos (
 - 製品ラベル撮影 → 判定 → 編集 → 個体登録
 - 2 スキャン移動：対象 QR → 移動先 QR（コンテナ・個体共通）
 - 本数の出し入れ：QR → 品目選択 → ±数量
-- 印刷：EPSON TM-L100 に ePOS2 SDK で LAN 接続。ラベル = QR（`https://<domain>/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
+- 印刷：EPSON TM-L100 に ePOS2 SDK で LAN 接続。ラベル = QR（`https://stash.mtamaramu.com/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
 
 ## 進め方（フェーズ）
 
@@ -189,9 +189,10 @@ CREATE TABLE photos (
 ## 未決事項（実装前にユーザーに確認）
 
 - [x] リポジトリ名：`stash-qr`
-- [ ] マシンタグの名前空間（候補 `stashqr`）
-- [ ] 公開ドメイン（QR に焼くので後から変えにくい）
-- [ ] 認証方式（既存の ippoan 認証基盤に乗せるか）
-- [ ] 使う AI モデル
-- [ ] Flickr：アカウント種別（無料は保存枚数に上限あり）と、業務利用での API キー規約の確認
+- [x] マシンタグの名前空間：`stashqr`（Flickr の namespace は `-` 不可）
+- [x] 公開ドメイン：`stash.mtamaramu.com`（個人アプリ。QR は `https://stash.mtamaramu.com/c/<id>`・`/a/<id>`）
+- [x] 認証方式：Cloudflare Access。ブラウザは本人の Google ログイン、Android はサービストークン。
+      Worker は `Cf-Access-Jwt-Assertion` を信用せず、team の JWKS で署名・iss・aud・exp を検証する
+- [x] AI モデル：Gemini Flash。Worker から Gemini API を呼ぶ（キーは Workers secret）
+- [x] Flickr：Pro（保存枚数の上限なし）。個人利用
 - [ ] 類似の先行実装調査（ユーザーが後で実施予定。見つかれば設計を見直す）
