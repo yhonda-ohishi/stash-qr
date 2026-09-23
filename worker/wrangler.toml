@@ -1,4 +1,5 @@
 name = "stash-qr"
+account_id = "24b45709d060d957340180e995f0d373"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-01"
 
@@ -7,15 +8,17 @@ compatibility_date = "2026-09-01"
 workers_dev = false
 preview_urls = false
 
+# QR に焼くドメイン。Access アプリ "stash-qr" がこの hostname を保護している。
+routes = [{ pattern = "stash.mtamaramu.com", custom_domain = true }]
+
 [build]
 command = "cargo install -q worker-build@0.8.6 && worker-build --release"
 
-# database_id は本番 D1 を作ったときに埋める (wrangler d1 create stash-qr)。
-# ローカル (wrangler dev / テスト) は id に関係なく .wrangler/state に作られる。
+# 本番 D1 (apac)。ローカル (wrangler dev / テスト) は --persist-to の先に別に作られる。
 [[d1_databases]]
 binding = "DB"
 database_name = "stash-qr"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "6dd77207-380a-44e7-bc86-814cf9dede69"
 migrations_dir = "migrations"
 
 # Cloudflare Access (docs/design.md「未決事項」)。空のままだと全リクエストが 503 (fail closed)。
