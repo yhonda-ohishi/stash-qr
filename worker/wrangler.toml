@@ -1,0 +1,14 @@
+name = "stash-qr"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-01"
+
+[build]
+command = "cargo install -q worker-build@0.8.6 && worker-build --release"
+
+# database_id は本番 D1 を作ったときに埋める (wrangler d1 create stash-qr)。
+# ローカル (wrangler dev / テスト) は id に関係なく .wrangler/state に作られる。
+[[d1_databases]]
+binding = "DB"
+database_name = "stash-qr"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

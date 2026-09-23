@@ -1,0 +1,17 @@
+[package]
+name = "stash-qr-worker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+worker = { version = "0.8.6", features = ["d1"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "s"
+lto = true

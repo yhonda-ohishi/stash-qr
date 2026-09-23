@@ -1,0 +1,83 @@
+name: CI
+
+# worker/ の検査 → green なら ippoan/ci-workflows の auto-merge.yml で squash auto-merge。
+# 呼び方は ippoan/gh-actions-live の ci.yml と同じ (自前の検査 job + needs で gate した
+# auto-merge job)。
+#
+# ★ この repo は yhonda-ohishi (個人アカウント) 配下で、reusable は ippoan org にある。
+#   `secrets: inherit` は同じ org の中でしか渡らないので、CI_APP_ID / CI_APP_PRIVATE_KEY
+#   は明示的に渡す。値はこの repo の Actions secret に置く (ippoan の org secret は届かない)。
+#   App (ippoan-ci-bot) はこの repo にもインストールされている必要がある。
+#
+# 前提 (repo 設定、1 回だけ):
+#   - Settings → General → Allow auto-merge: ON
+#   - main の branch protection で `test` を required check にする
+#     (無いと auto-merge が CI を待たずに即 merge する)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: worker
+          cache-bin: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy (wasm32 = 本番と同じ target)
+        run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+
+      - name: npm ci
+        run: npm ci
+
+      # wrangler dev の build command (wrangler.toml) と同じ版。入っていれば cargo install は何もしない。
+      - name: worker-build
+        run: cargo install --locked worker-build@0.8.6
+
+      # cargo test (ID まわり) → ローカル D1 + wrangler dev への結合テスト
+      - name: test
+        run: npm test
+
+  auto-merge:
+    name: Auto Merge
+    needs: [test]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      needs.test.result == 'success'
+    uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    secrets:
+      CI_APP_ID: ${{ secrets.CI_APP_ID }}
+      CI_APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}

@@ -1,0 +1,12 @@
+{
+  "name": "stash-qr-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "cargo test && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.136.3"
+  }
+}
