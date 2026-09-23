@@ -17,6 +17,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # ready_for_review を足さないと、下書きから戻しても CI が走らず auto-merge も始まらない
+    # (下書き中の run では Auto Merge が skip されるため)。
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
