@@ -179,7 +179,8 @@ pub const CONTAINER_PROMPT: &str = "\
   - description: 見た目の短い説明 (例: 黒い小型のレシートプリンタ)
   - confidence: その行の確からしさ (0〜1)
 - container: 写っている袋・箱・棚など入れ物自体について、種別 (kind) と、中身が分かる短い日本語の名前
-  (name。例: USB ケーブルの袋) を付けてください
+  (name。例: USB ケーブルの袋) を付けてください。container は必ず返してください。入れ物がはっきり写っていないときは
+  kind を other にし、name は中身から付けてください
 ケーブルは 1 本ずつ束ねて両端を同じ辺に揃えてあります。端子の形を見て数えてください。";
 
 /// 指示文に登録済みの数量品目を添える。同じ物に同じ名前を付けさせ、表記揺れで品目が増えるのを防ぐ。
@@ -236,15 +237,14 @@ pub fn container_schema() -> Value {
             },
             "container": {
                 "type": "OBJECT",
-                "nullable": true,
                 "properties": {
                     "kind": { "type": "STRING", "enum": ["bag", "box", "shelf", "case", "drawer", "other"] },
                     "name": { "type": "STRING" }
                 },
-                "required": ["kind"]
+                "required": ["kind", "name"]
             }
         },
-        "required": ["stock", "assets"]
+        "required": ["stock", "assets", "container"]
     })
 }
 
@@ -267,6 +267,17 @@ mod tests {
             s["properties"]["assets"]["items"]["properties"]["serial"]["nullable"],
             true
         );
+    }
+
+    #[test]
+    fn container_schema_requires_container_kind_and_name() {
+        let s = container_schema();
+        let required = s["required"].as_array().unwrap();
+        assert!(required.contains(&json!("container")));
+        assert!(s["properties"]["container"].get("nullable").is_none());
+        let container_required = s["properties"]["container"]["required"].as_array().unwrap();
+        assert!(container_required.contains(&json!("kind")));
+        assert!(container_required.contains(&json!("name")));
     }
 
     #[test]
