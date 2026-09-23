@@ -43,6 +43,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/containers/:id/move", containers::move_to)
         .post_async("/api/containers/:id/stock", containers::stock_delta)
         .post_async("/api/containers/:id/judge", judgements::judge_container)
+        .get_async("/api/judgements/:id", judgements::get)
         .post_async("/api/judgements/:id/confirm", judgements::confirm)
         .get_async("/api/item-types", item_types::list)
         .post_async("/api/item-types", item_types::create)

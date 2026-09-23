@@ -9,6 +9,7 @@ import {
   type ContainerDetail,
   type ItemType,
 } from "../api";
+import { resumeLink } from "../judge";
 import { navigate, type ScreenProps } from "../router";
 import { containerLabelLines } from "../print";
 import { Crumbs, crumbLabel, errorText, PrintButton, Thumbs, useLoad } from "../ui";
@@ -66,6 +67,14 @@ export function ContainerScreen({ params, query }: ScreenProps) {
         </section>
       )}
 
+      {d.unconfirmed && (
+        <Unconfirmed
+          container={d.container}
+          pendingJudgementId={d.pending_judgement_id}
+          parentId={d.breadcrumb.length > 1 ? d.breadcrumb[d.breadcrumb.length - 2].id : null}
+        />
+      )}
+
       {d.container.memo && <p>{d.container.memo}</p>}
       <Thumbs photos={d.photos} />
 
@@ -75,6 +84,7 @@ export function ContainerScreen({ params, query }: ScreenProps) {
           {d.children.map((c) => (
             <li key={c.id}>
               <a href={`/app/c/${encodeURIComponent(c.id)}`}>{c.name || "-"}</a> <small>({c.kind})</small>
+              {d.unconfirmed_children.includes(c.id) && <span class="badge">未確定</span>}
             </li>
           ))}
         </ul>
@@ -138,10 +148,12 @@ export function ContainerScreen({ params, query }: ScreenProps) {
       </div>
 
       <EditContainer container={d.container} onSaved={load.reload} />
-      <DeleteContainer
-        container={d.container}
-        parentId={d.breadcrumb.length > 1 ? d.breadcrumb[d.breadcrumb.length - 2].id : null}
-      />
+      <p>
+        <DeleteContainer
+          container={d.container}
+          parentId={d.breadcrumb.length > 1 ? d.breadcrumb[d.breadcrumb.length - 2].id : null}
+        />
+      </p>
     </main>
   );
 }
@@ -278,6 +290,32 @@ function EditContainer({ container, onSaved }: { container: ContainerDetail["con
   );
 }
 
+/** 撮影して登録で作ったが判定を確定していないコンテナの帯。提案から再開するか、消す。 */
+function Unconfirmed({
+  container,
+  pendingJudgementId,
+  parentId,
+}: {
+  container: ContainerDetail["container"];
+  pendingJudgementId: string | null;
+  parentId: string | null;
+}) {
+  const next = resumeLink(container.id, pendingJudgementId);
+  return (
+    <section class="warn">
+      <p>
+        <strong>判定が確定されていません</strong>
+      </p>
+      <div class="actions">
+        <a class="button primary" href={next.href}>
+          {next.label}
+        </a>
+        <DeleteContainer container={container} parentId={parentId} />
+      </div>
+    </section>
+  );
+}
+
 /** 確認してから削除する。空でなければ 409 をそのまま出す。成功したら親のコンテナ (無ければホーム) へ。 */
 function DeleteContainer({
   container,
@@ -303,11 +341,11 @@ function DeleteContainer({
   };
 
   return (
-    <p>
+    <span>
       <button disabled={busy} onClick={remove}>
         削除
       </button>
       {error && <span class="error"> {error}</span>}
-    </p>
+    </span>
   );
 }

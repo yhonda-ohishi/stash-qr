@@ -185,6 +185,17 @@ input.qty {
   border: 1px solid var(--warn);
   border-radius: var(--radius);
 }
+/* 未確定 (撮影して登録で作って判定を確定していない) の印 */
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 0.75em;
+  vertical-align: middle;
+}
 /* 撮影→判定→確定 (JudgeScreen)・ホームの大きな「撮影して登録」 */
 .shoot {
   min-height: 64px;

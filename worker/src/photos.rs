@@ -111,6 +111,21 @@ pub(crate) async fn list_for(d1: &D1Database, owner: Owner<'_>) -> Result<Vec<Ph
     .results::<PhotoRef>()
 }
 
+/// 判定に結ばれた写真 (link_judgement) のうち最新の 1 枚。提案から再開するときに見せる。
+pub(crate) async fn latest_for_judgement(
+    d1: &D1Database,
+    judgement_id: &str,
+) -> Result<Option<PhotoView>> {
+    Ok(d1
+        .prepare(format!(
+            "SELECT {COLS} FROM photos WHERE judgement_id = ?1 ORDER BY taken_at DESC, id DESC LIMIT 1"
+        ))
+        .bind(&[text(judgement_id)])?
+        .first::<Row>(None)
+        .await?
+        .map(PhotoView::from))
+}
+
 /// 本文を画像として読む。形が違えば `Err(応答)`。
 pub(crate) async fn read_image(
     req: &mut Request,
