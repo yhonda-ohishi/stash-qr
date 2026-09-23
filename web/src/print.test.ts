@@ -43,6 +43,10 @@ describe("buildLabel", () => {
     expect(xml).toContain("ほか 2 件");
     expect(xml).not.toContain(">d<");
   });
+  test("下の余白 (feed line=\"4\") の直後に cut が来る", () => {
+    const xml = buildLabel({ kind: "c", id: "ID1", lines: ["a"] });
+    expect(xml).toMatch(/<feed line="4"\/><cut type="feed"\/>$/);
+  });
 });
 
 describe("containerLabelLines", () => {
