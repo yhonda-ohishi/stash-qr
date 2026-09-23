@@ -104,10 +104,13 @@ export function ContainerScreen({ params }: ScreenProps) {
 
       <h2>操作</h2>
       <div class="actions">
-        {/* 後続の画面 (撮影→判定・印刷など) のボタンはここに足す */}
         <a class="button" href={`/app/c/${encodeURIComponent(d.container.id)}/judge`}>
           撮影して判定
         </a>
+        <a class="button" href={`/app/label?container=${encodeURIComponent(d.container.id)}`}>
+          ラベルを撮って個体登録
+        </a>
+        {/* 後続の画面 (印刷など) のボタンはここに足す */}
       </div>
     </main>
   );

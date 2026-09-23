@@ -242,10 +242,62 @@ export function photoUrl(id: string, size: "t" | "m" | "z" | "c" | "b" = "t"): s
 }
 
 // ---------------------------------------------------------------------------
-// 後続が足す: judge / confirm / judge-label / assets create はここから下へ
+// ラベル判定・個体登録
 // ---------------------------------------------------------------------------
 
-// --- コンテナ写真の判定・確定 (judgements.rs) ---
+/** assets.rs judge_label の提案 (gemini.rs label_schema)。読めなかった項目は null。 */
+export type LabelProposal = {
+  maker: string | null;
+  model: string | null;
+  serial: string | null;
+  other_text: string | null;
+  confidence: number;
+};
+
+/** assets.rs `Matches`。serial は確度高、model は確度中 (複数ならユーザーに選ばせる)。 */
+export type AssetMatches = { serial: Asset[]; model: Asset[] };
+
+/** `POST /api/assets/judge-label` の 200 応答。 */
+export type JudgeLabelResult = {
+  judgement_id: string;
+  model: string;
+  proposal: LabelProposal;
+  matches: AssetMatches;
+  photo: PhotoView;
+};
+
+/**
+ * 製品ラベル写真を送って判定させる。502 (AI 失敗) は ApiError で投げる
+ * (`error.body` に `{ error, photo }` — photo は保存済みなので手入力で登録できる)。
+ */
+export function judgeLabel(blob: Blob, contentType?: string): Promise<JudgeLabelResult> {
+  return request("POST", "/api/assets/judge-label", blob, contentType);
+}
+
+/** `POST /api/assets` の本文。変換は label.ts の buildCreateAssetBody を使う。 */
+export type CreateAssetBody = {
+  item_type_id?: string;
+  name?: string;
+  category?: string;
+  maker?: string;
+  model?: string;
+  serial?: string;
+  memo?: string;
+  status?: string;
+  container_id?: string;
+  judgement_id?: string;
+  photo_id?: string;
+};
+
+/** 個体を作る。同じ (maker, model, serial) が既にあれば 409 (`error.body` に `{ error, asset }`)。 */
+export async function createAsset(body: CreateAssetBody): Promise<Asset> {
+  const r = await request<{ asset: Asset }>("POST", "/api/assets", body);
+  return r.asset;
+}
+
+// ---------------------------------------------------------------------------
+// コンテナ写真の判定・確定 (judgements.rs)
+// ---------------------------------------------------------------------------
 
 /** 数量物の品目の大分類 (gemini.rs `container_schema` の enum)。 */
 export const STOCK_CATEGORIES = ["cable", "power", "battery", "other"] as const;

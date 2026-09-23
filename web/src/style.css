@@ -201,3 +201,20 @@ button.link {
   background: #fffbeb;
   border-radius: 8px;
 }
+
+/* ラベル → 個体登録 (LabelScreen) */
+.fields-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.fields-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9em;
+}
+.fields-form input {
+  width: 100%;
+}
