@@ -170,7 +170,7 @@ CREATE TABLE photos (
 - `POST /api/containers/:id/judge` コンテナ写真 → 提案（数量物＋個体候補）。Flickr 保存を並行
 - `POST /api/judgements/:id/confirm` `{ final }` stock と assets に反映し、final_json を保存
 - `POST /api/assets/judge-label` 製品ラベル写真 → メーカー・型番・シリアルの提案。Flickr 保存を並行
-- `POST /api/assets` 個体作成（ラベル判定の確定）
+- `POST /api/assets` 個体作成（ラベル判定の確定）。`item_type_id` が無ければ `category`（既定 device）× `name`（既定 = 型番）で品目を探し、無ければ作る。`judgement_id` があれば final_json を保存、`photo_id` があれば写真を個体に結び付ける。同じ (maker, model, serial) は 409
 - `GET /api/assets/:id` / `PATCH /api/assets/:id`（状態変更・メモ）
 - `POST /api/assets/:id/move` `{ container_id }`
 - `GET /api/item-types?q=` / `POST /api/item-types`
@@ -184,6 +184,8 @@ CREATE TABLE photos (
 
 ## AI 判定
 
+- モデルは Gemini Flash（`wrangler.toml` の `GEMINI_MODEL`、別名ではなく版を固定。判定ごとに ai_judgements.model に残す）。キーは Worker secret `GEMINI_API_KEY`。
+- 先行実装 ippoan/rust-alc-api の `alc-notify/src/extract.rs` と同じく `responseSchema` で形を固定し、`temperature` は 0。キーは URL でなくヘッダで送る。
 - 出力は JSON のみ。
 - コンテナ写真：
   `{ "stock": [ { "category", "name", "qty", "attrs", "confidence" } ], "assets": [ { "maker", "model", "serial", "description", "confidence" } ] }`

@@ -41,7 +41,7 @@ const COLS: &str = "id, flickr_photo_id, kind, container_id, asset_id, taken_at,
 /// クライアントに返す形。Flickr 側の識別子は含めない。
 #[derive(Serialize)]
 pub struct PhotoView {
-    id: String,
+    pub id: String,
     kind: String,
     container_id: Option<String>,
     asset_id: Option<String>,
@@ -80,7 +80,9 @@ async fn load(d1: &D1Database, id: &str) -> Result<Option<Row>> {
 }
 
 /// 本文を画像として読む。形が違えば `Err(応答)`。
-async fn read_image(req: &mut Request) -> std::result::Result<(Vec<u8>, String), Result<Response>> {
+pub(crate) async fn read_image(
+    req: &mut Request,
+) -> std::result::Result<(Vec<u8>, String), Result<Response>> {
     let ct = req
         .headers()
         .get("Content-Type")
@@ -160,6 +162,55 @@ async fn upload_and_record(
     Ok(())
 }
 
+pub struct NewPhoto<'a> {
+    pub kind: &'a str,
+    pub container_id: Option<&'a str>,
+    pub asset_id: Option<&'a str>,
+    pub taken_at: Option<&'a str>,
+}
+
+/// 行を「送信待ち」で作ってから Flickr に上げる。Flickr の失敗では Err にしない。
+/// 呼び出し側 (コンテナ・ラベルの判定) は AI 判定と並行してこれを走らせる。
+pub async fn store(
+    env: &Env,
+    d1: &D1Database,
+    meta: &NewPhoto<'_>,
+    bytes: &[u8],
+    ct: &str,
+) -> Result<PhotoView> {
+    let id = new_id(ROW_ID_LEN);
+    d1.prepare(format!(
+        "INSERT INTO photos (id, kind, container_id, asset_id, taken_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {NOW}), {NOW})"
+    ))
+    .bind(&[
+        text(&id),
+        text(meta.kind),
+        opt_text(meta.container_id),
+        opt_text(meta.asset_id),
+        opt_text(meta.taken_at),
+    ])?
+    .run()
+    .await?;
+    let Some(row) = load(d1, &id).await? else {
+        return Err(Error::RustError("photo vanished after insert".into()));
+    };
+    upload_and_record(env, d1, &row, bytes, ct).await?;
+    match load(d1, &id).await? {
+        Some(r) => Ok(r.into()),
+        None => Err(Error::RustError("photo vanished after upload".into())),
+    }
+}
+
+/// 判定が記録できたあとで、写真にその判定を結び付ける。
+pub async fn link_judgement(d1: &D1Database, photo_id: &str, judgement_id: &str) -> Result<()> {
+    d1.prepare("UPDATE photos SET judgement_id = ?2 WHERE id = ?1")
+        .bind(&[text(photo_id), text(judgement_id)])?
+        .run()
+        .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/photos
 // ---------------------------------------------------------------------------
@@ -206,29 +257,20 @@ pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
         return error(404, "asset not found");
     }
 
-    let id = new_id(ROW_ID_LEN);
-    d1.prepare(format!(
-        "INSERT INTO photos (id, kind, container_id, asset_id, taken_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {NOW}), {NOW})"
-    ))
-    .bind(&[
-        text(&id),
-        text(&kind),
-        opt_text(container_id.as_deref()),
-        opt_text(asset_id.as_deref()),
-        opt_text(taken_at.as_deref()),
-    ])?
-    .run()
+    let photo = store(
+        &ctx.env,
+        &d1,
+        &NewPhoto {
+            kind: &kind,
+            container_id: container_id.as_deref(),
+            asset_id: asset_id.as_deref(),
+            taken_at: taken_at.as_deref(),
+        },
+        &bytes,
+        &ct,
+    )
     .await?;
-
-    let Some(row) = load(&d1, &id).await? else {
-        return error(500, "photo vanished after insert");
-    };
-    upload_and_record(&ctx.env, &d1, &row, &bytes, &ct).await?;
-    match load(&d1, &id).await? {
-        Some(r) => json(201, &serde_json::json!({ "photo": PhotoView::from(r) })),
-        None => error(500, "photo vanished after upload"),
-    }
+    json(201, &serde_json::json!({ "photo": photo }))
 }
 
 // ---------------------------------------------------------------------------

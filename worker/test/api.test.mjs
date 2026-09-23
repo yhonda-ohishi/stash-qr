@@ -29,6 +29,10 @@ const devs = [];
 const FLICKR = { consumerKey: "ck-test", consumerSecret: "cs-test", token: "at-test", tokenSecret: "ats-test" };
 const flickr = { uploads: [], photos: new Map(), failUploads: false, nextId: 9000, badSignatures: 0 };
 
+// 偽の Gemini。次に返す判定 (next) を決めておき、受け取ったリクエストを残す。
+const GEMINI_KEY = "gk-test";
+const gemini = { requests: [], next: null, fail: false };
+
 function pct(s) {
   return encodeURIComponent(s).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 }
@@ -75,6 +79,14 @@ async function flickrHandler(req, res, origin) {
     const p = flickr.photos.get(params.photo_id);
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify(p ? { stat: "ok", photo: { id: params.photo_id, server: p.server, secret: p.secret } } : { stat: "fail", code: 1, message: "Photo not found" }));
+  }
+  if (req.method === "POST" && /^\/v1beta\/models\/[^/]+:generateContent$/.test(url.pathname)) {
+    const reqBody = JSON.parse(body.toString());
+    gemini.requests.push({ path: url.pathname, key: req.headers["x-goog-api-key"], search: url.search, body: reqBody });
+    if (req.headers["x-goog-api-key"] !== GEMINI_KEY) return res.writeHead(403).end("bad key");
+    if (gemini.fail) return res.writeHead(503).end("overloaded");
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(gemini.next) }] } }] }));
   }
   const m = url.pathname.match(/^\/static\/(\w+)\/(\d+)_(\w+)_(\w)\.jpg$/);
   if (req.method === "GET" && m) {
@@ -165,6 +177,8 @@ before(async () => {
     FLICKR_CONSUMER_KEY: FLICKR.consumerKey,
     FLICKR_CONSUMER_SECRET: FLICKR.consumerSecret,
     FLICKR_ACCESS_TOKEN_JSON: JSON.stringify({ token: FLICKR.token, secret: FLICKR.tokenSecret, userNsid: "1@N00", username: "t" }),
+    GEMINI_ENDPOINT: `${flickrOrigin}/v1beta`,
+    GEMINI_API_KEY: GEMINI_KEY,
   });
   // wrangler.toml の [vars] には本番の値が入っているので、空で上書きして未設定を作る
   bareBase = await startDev({ ACCESS_ISSUER: "", ACCESS_AUD: "" });
@@ -477,5 +491,127 @@ describe("photos (Flickr)", () => {
     assert.equal((await upload("?kind=asset&asset_id=nope")).status, 404);
     assert.equal((await upload("", { method: "PUT", path: "/api/photos/nope/image" })).status, 404);
     assert.equal((await call("GET", "/api/photos")).status, 400);
+  });
+});
+
+describe("assets (ラベル判定・個体)", () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 0xff, 0xd9]);
+  const judgeLabel = async () => {
+    const res = await fetch(`${base}/api/assets/judge-label`, {
+      method: "POST",
+      headers: { "content-type": "image/jpeg", "cf-access-jwt-assertion": jwt() },
+      body: JPEG,
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  test("ラベル判定: Gemini に画像と schema を送り、写真は Flickr に残る", async () => {
+    gemini.next = { maker: "EPSON", model: "TM-L100", serial: "X4ZL000001", other_text: null, confidence: 0.93 };
+    const r = await judgeLabel();
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.proposal.model, "TM-L100");
+    assert.equal(r.body.model, "gemini-3.8-flash");
+    assert.equal(r.body.photo.status, "uploaded");
+    assert.deepEqual(r.body.matches, { serial: [], model: [] });
+
+    const sent = gemini.requests.at(-1);
+    assert.equal(sent.path, "/v1beta/models/gemini-3.8-flash:generateContent");
+    assert.equal(sent.search, "", "キーは URL に載せない");
+    assert.equal(sent.body.contents[0].parts[0].inlineData.data, JPEG.toString("base64"));
+    assert.equal(sent.body.generationConfig.responseSchema.properties.serial.nullable, true);
+    assert.equal(flickr.uploads.at(-1).params.tags.includes("stashqr:kind=label"), true);
+
+    // 提案と写真の結び付きが D1 に残る
+    const [j] = sql(`SELECT kind, model, proposal_json, final_json FROM ai_judgements WHERE id = '${r.body.judgement_id}'`);
+    assert.equal(j.kind, "label");
+    assert.equal(JSON.parse(j.proposal_json).serial, "X4ZL000001");
+    assert.equal(j.final_json, null);
+    assert.deepEqual(sql(`SELECT judgement_id FROM photos WHERE id = '${r.body.photo.id}'`), [{ judgement_id: r.body.judgement_id }]);
+  });
+
+  test("確定で個体ができ、提案と確定の両方が残る。同じシリアルは次の判定で一致する", async () => {
+    gemini.next = { maker: "EPSON", model: "TM-L100", serial: "X4ZL000002", other_text: null, confidence: 0.9 };
+    const j = await judgeLabel();
+    const shelf = await post("/api/containers", { kind: "shelf" });
+    // ユーザーがシリアルを直してから確定する
+    const created = await post("/api/assets", {
+      maker: "EPSON", model: "TM-L100", serial: "X4ZL000003",
+      container_id: shelf.body.id, judgement_id: j.body.judgement_id, photo_id: j.body.photo.id,
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const a = created.body.asset;
+    assert.equal(a.item_name, "TM-L100", "品目は型番で自動作成");
+    assert.equal(a.container_id, shelf.body.id);
+
+    const [row] = sql(`SELECT proposal_json, final_json, asset_id FROM ai_judgements WHERE id = '${j.body.judgement_id}'`);
+    assert.equal(JSON.parse(row.proposal_json).serial, "X4ZL000002");
+    assert.equal(JSON.parse(row.final_json).serial, "X4ZL000003");
+    assert.equal(row.asset_id, a.id);
+    assert.deepEqual(sql(`SELECT asset_id FROM photos WHERE id = '${j.body.photo.id}'`), [{ asset_id: a.id }]);
+    assert.deepEqual(sql(`SELECT kind, to_id, actor FROM movements WHERE asset_id = '${a.id}'`), [
+      { kind: "asset_move", to_id: shelf.body.id, actor: EMAIL },
+    ]);
+
+    // 同じ判定は二度確定できない・同じ (maker, model, serial) は作れない
+    assert.equal((await post("/api/assets", { model: "TM-L100", judgement_id: j.body.judgement_id })).status, 409);
+    const dup = await post("/api/assets", { maker: "EPSON", model: "TM-L100", serial: "X4ZL000003" });
+    assert.equal(dup.status, 409);
+    assert.equal(dup.body.asset.id, a.id);
+
+    // 次のラベル判定: シリアル一致 (大文字小文字・前後空白は無視) と型番一致が返る
+    gemini.next = { maker: "EPSON", model: "tm-l100", serial: " x4zl000003 ", confidence: 0.8 };
+    const again = await judgeLabel();
+    assert.deepEqual(again.body.matches.serial.map((x) => x.id), [a.id]);
+    assert.ok(again.body.matches.model.some((x) => x.id === a.id));
+
+    // コンテナの画面にも個体が出る
+    const view = await call("GET", `/api/containers/${shelf.body.id}`);
+    assert.deepEqual(view.body.assets.map((x) => x.id), [a.id]);
+    assert.equal(view.body.totals.asset_count, 1);
+  });
+
+  test("取得・状態変更・移動", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const a = (await post("/api/assets", { model: "A2338", serial: "SN-1", category: "device" })).body.asset;
+
+    const moved = await post(`/api/assets/${a.id}/move`, { container_id: box.body.id });
+    assert.equal(moved.status, 200);
+    const got = await call("GET", `/api/assets/${a.id}`);
+    assert.deepEqual(got.body.breadcrumb.map((c) => c.id), [box.body.id]);
+
+    const lent = await call("PATCH", `/api/assets/${a.id}`, { status: "lent", memo: "貸出中" });
+    assert.equal(lent.body.asset.status, "lent");
+    const out = await post(`/api/assets/${a.id}/move`, { container_id: null });
+    assert.equal(out.body.asset.container_id, null);
+    assert.deepEqual(
+      sql(`SELECT kind, from_id, to_id, note FROM movements WHERE asset_id = '${a.id}' ORDER BY at`),
+      [
+        { kind: "asset_move", from_id: null, to_id: box.body.id, note: null },
+        { kind: "asset_status", from_id: null, to_id: null, note: "in_stock -> lent" },
+        { kind: "asset_move", from_id: box.body.id, to_id: null, note: null },
+      ],
+    );
+
+    assert.equal((await call("PATCH", `/api/assets/${a.id}`, { status: "gone" })).status, 400);
+    assert.equal((await call("PATCH", `/api/assets/${a.id}`, { container_id: null })).status, 400);
+    assert.equal((await post(`/api/assets/${a.id}/move`, { container_id: "ZZZZZZ" })).status, 404);
+    assert.equal((await post("/api/assets/nope/move", { container_id: null })).status, 404);
+    assert.equal((await call("GET", "/api/assets/nope")).status, 404);
+  });
+
+  test("入力の検証と数量品目との区別", async () => {
+    assert.equal((await post("/api/assets", {})).status, 400, "品目が決まらない");
+    assert.equal((await post("/api/assets", { model: "X", status: "gone" })).status, 400);
+    assert.equal((await post("/api/assets", { model: "X", container_id: "ZZZZZZ" })).status, 404);
+    const cable = await post("/api/item-types", { category: "cable", name: "USB-A-C", tracking: "quantity" });
+    assert.equal((await post("/api/assets", { item_type_id: cable.body.id })).status, 422);
+  });
+
+  test("Gemini が落ちても写真は残り、502 で写真を返す", async () => {
+    gemini.fail = true;
+    const r = await judgeLabel();
+    gemini.fail = false;
+    assert.equal(r.status, 502);
+    assert.equal(r.body.photo.status, "uploaded");
   });
 });
