@@ -167,6 +167,7 @@ CREATE TABLE photos (
 ## API
 
 - `POST /api/containers` 作成（parent_id 任意）
+- `GET /api/containers?parent=` 一覧。省略は一番上、指定はその直下。直下の子の数・本数の合計・個体数を集計して返す。存在しない parent は 404
 - `GET /api/containers/:id` パンくず、直下の子、stock、assets、子孫込み合計、サムネイル
 - `PATCH /api/containers/:id` 名前・種別・メモ変更
 - `POST /api/containers/:id/move` `{ parent_id }` 循環チェック付き
@@ -200,7 +201,8 @@ CREATE TABLE photos (
 
 ## PWA（スマホの画面）
 
-- URL：画面は `/app/` の下（ホーム `/app`、コンテナ `/app/c/<id>`、個体 `/app/a/<id>`、2 スキャン移動 `/app/move`）。manifest の start_url も `/app/`。
+- URL：画面は `/app/` の下（ホーム `/app`、コンテナ作成 `/app/new`（`?parent=<id>` 任意）、コンテナ `/app/c/<id>`、個体 `/app/a/<id>`、2 スキャン移動 `/app/move`）。manifest の start_url も `/app/`。
+- ホームの「場所」節：一番上のコンテナ一覧（名前・種別・直下の子/本数/個体の数）と「新しいコンテナ」ボタン。コンテナ画面にも「この中にコンテナを作る」を出す。作成後は `?created=1` でラベル印刷ボタンを目立たせる
   QR の `/c/<id>`・`/a/<id>` は Worker の簡易 HTML のまま残し、そこから「アプリで開く」で `/app/...` へリンクする。PWA の中で QR を読んだら `/app/c/<id>`・`/app/a/<id>` へ遷移する。ルート表は `web/src/routes.tsx` の 1 か所
 - 端末は Android の Chrome だけ（BarcodeDetector があるもの。無ければ読めない旨を出す）
 - 写真は送る前に PWA で長辺 2048px 以下・JPEG 品質 0.85 に縮める（`web/src/image.ts`）

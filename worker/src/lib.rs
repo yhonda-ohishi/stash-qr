@@ -36,6 +36,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     };
     let res = Router::with_data(Actor(actor))
         .post_async("/api/containers", containers::create)
+        .get_async("/api/containers", containers::list)
         .get_async("/api/containers/:id", containers::get)
         .patch_async("/api/containers/:id", containers::patch)
         .delete_async("/api/containers/:id", containers::delete)

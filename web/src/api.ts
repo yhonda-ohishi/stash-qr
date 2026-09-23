@@ -180,6 +180,42 @@ const seg = encodeURIComponent;
 // コンテナ・本数
 // ---------------------------------------------------------------------------
 
+/** `GET /api/containers?parent=` の 1 件 (containers.rs `ListItem`)。直下だけの集計。 */
+export type ContainerListItem = {
+  id: string;
+  kind: string;
+  name: string | null;
+  child_count: number;
+  stock_total: number;
+  asset_count: number;
+};
+
+/** `parentId` 省略/undefined で一番上。存在しない parent は 404。 */
+export async function listContainers(parentId?: string): Promise<ContainerListItem[]> {
+  const path = parentId ? `/api/containers?parent=${seg(parentId)}` : "/api/containers";
+  const r = await request<{ containers: ContainerListItem[] }>("GET", path);
+  return r.containers;
+}
+
+/** 本文は containers.rs `create` の入力そのまま (kind 必須)。 */
+export type CreateContainerBody = { kind: string; parent_id?: string | null; name?: string; memo?: string };
+
+export function createContainer(body: CreateContainerBody): Promise<Container> {
+  return request("POST", "/api/containers", body);
+}
+
+/** name・kind・memo だけ変更可 (parent_id は /move)。 */
+export type PatchContainerBody = { name?: string | null; kind?: string; memo?: string | null };
+
+export function patchContainer(id: string, body: PatchContainerBody): Promise<Container> {
+  return request("PATCH", `/api/containers/${seg(id)}`, body);
+}
+
+/** 空でなければ 409 (中身が残っている)。 */
+export function deleteContainer(id: string): Promise<void> {
+  return request("DELETE", `/api/containers/${seg(id)}`);
+}
+
 export function getContainer(id: string): Promise<ContainerDetail> {
   return request("GET", `/api/containers/${seg(id)}`);
 }

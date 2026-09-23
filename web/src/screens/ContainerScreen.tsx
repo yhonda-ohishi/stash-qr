@@ -1,6 +1,15 @@
 import { useState } from "preact/hooks";
-import { ApiError, getContainer, listItemTypes, stockDelta, type ContainerDetail, type ItemType } from "../api";
-import type { ScreenProps } from "../router";
+import {
+  ApiError,
+  deleteContainer,
+  getContainer,
+  listItemTypes,
+  patchContainer,
+  stockDelta,
+  type ContainerDetail,
+  type ItemType,
+} from "../api";
+import { navigate, type ScreenProps } from "../router";
 import { containerLabelLines } from "../print";
 import { Crumbs, crumbLabel, errorText, PrintButton, Thumbs, useLoad } from "../ui";
 
@@ -10,7 +19,7 @@ function stockError(e: unknown): string {
   return errorText(e);
 }
 
-export function ContainerScreen({ params }: ScreenProps) {
+export function ContainerScreen({ params, query }: ScreenProps) {
   const id = params.id;
   const load = useLoad(() => getContainer(id), id);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +56,16 @@ export function ContainerScreen({ params }: ScreenProps) {
       <h1>
         {crumbLabel(d.container)} <small>{d.container.kind} · {d.container.id}</small>
       </h1>
+
+      {query.created === "1" && (
+        <section class="created-banner">
+          <p>
+            <strong>ラベルを印刷して貼ってください</strong>
+          </p>
+          <PrintButton kind="c" id={d.container.id} lines={containerLabelLines(d)} />
+        </section>
+      )}
+
       {d.container.memo && <p>{d.container.memo}</p>}
       <Thumbs photos={d.photos} />
 
@@ -62,6 +81,9 @@ export function ContainerScreen({ params }: ScreenProps) {
       ) : (
         <p class="muted">(なし)</p>
       )}
+      <a class="button" href={`/app/new?parent=${encodeURIComponent(d.container.id)}`}>
+        この中にコンテナを作る
+      </a>
 
       <h2>本数</h2>
       {error && <p class="error">{error}</p>}
@@ -113,6 +135,12 @@ export function ContainerScreen({ params }: ScreenProps) {
         </a>
         <PrintButton kind="c" id={d.container.id} lines={containerLabelLines(d)} />
       </div>
+
+      <EditContainer container={d.container} onSaved={load.reload} />
+      <DeleteContainer
+        container={d.container}
+        parentId={d.breadcrumb.length > 1 ? d.breadcrumb[d.breadcrumb.length - 2].id : null}
+      />
     </main>
   );
 }
@@ -186,5 +214,99 @@ function Totals({ d }: { d: ContainerDetail }) {
         <li>個体 {d.totals.asset_count} 台</li>
       </ul>
     </>
+  );
+}
+
+/** 名前・種別・メモをその場で開くフォームで編集する欄。 */
+function EditContainer({ container, onSaved }: { container: ContainerDetail["container"]; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState(container.kind);
+  const [name, setName] = useState(container.name ?? "");
+  const [memo, setMemo] = useState(container.memo ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (e: Event) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await patchContainer(container.id, { kind, name: name.trim() || null, memo: memo.trim() || null });
+      setOpen(false);
+      onSaved();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <p>
+        <button onClick={() => setOpen(true)}>編集</button>
+      </p>
+    );
+  }
+
+  return (
+    <form onSubmit={save}>
+      <h2>編集</h2>
+      <label>
+        種別
+        <input type="text" value={kind} onInput={(e) => setKind(e.currentTarget.value)} required />
+      </label>
+      <label>
+        名前
+        <input type="text" value={name} onInput={(e) => setName(e.currentTarget.value)} />
+      </label>
+      <label>
+        メモ
+        <textarea value={memo} onInput={(e) => setMemo(e.currentTarget.value)} />
+      </label>
+      {error && <p class="error">{error}</p>}
+      <div class="row">
+        <button class="primary" type="submit" disabled={busy || !kind.trim()}>
+          {busy ? "保存中…" : "保存"}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} disabled={busy}>
+          やめる
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** 確認してから削除する。空でなければ 409 をそのまま出す。成功したら親のコンテナ (無ければホーム) へ。 */
+function DeleteContainer({
+  container,
+  parentId,
+}: {
+  container: ContainerDetail["container"];
+  parentId: string | null;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const remove = async () => {
+    if (!confirm(`「${crumbLabel(container)}」を削除します。よいですか`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteContainer(container.id);
+      navigate(parentId ? `/app/c/${encodeURIComponent(parentId)}` : "/app", { replace: true });
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <p>
+      <button disabled={busy} onClick={remove}>
+        削除
+      </button>
+      {error && <span class="error"> {error}</span>}
+    </p>
   );
 }
