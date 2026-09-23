@@ -208,6 +208,7 @@ CREATE TABLE photos (
   判定画面は `?new=1` のとき撮影の段を飛ばして自動送信し、編集リストの上に種別・名前欄（AI の proposal.container が初期値）を出し、確定の final.container でコンテナに書き込む。確定後は `?created=1` でコンテナ画面のラベル印刷ボタンを目立たせる。
   AI 判定に失敗したときは、作ったばかりの空のコンテナを「削除して撮り直す」(`DELETE`、空なので通る) で消せる
   QR の `/c/<id>`・`/a/<id>` は Worker の簡易 HTML のまま残し、そこから「アプリで開く」で `/app/...` へリンクする。PWA の中で QR を読んだら `/app/c/<id>`・`/app/a/<id>` へ遷移する。ルート表は `web/src/routes.tsx` の 1 か所
+- 写真なしで作る（`/app/new`、`?parent=<id>` 任意）：棚・部屋のように中身を撮る意味の無い親向け。種別（よく使う棚・部屋・箱・袋・ケース・引き出し＋自由入力、既定は棚）と名前・メモだけ入れて `POST /api/containers` で作り、`?created=1` でコンテナ画面へ（既存のラベル印刷の目立たせ表示がそのまま出る）。フォーム→本文の変換は `web/src/newContainer.ts` の純粋関数
 - 端末は Android の Chrome だけ（BarcodeDetector があるもの。無ければ読めない旨を出す）
 - 写真は送る前に PWA で長辺 2048px 以下・JPEG 品質 0.85 に縮める（`web/src/image.ts`）
 - 送信待ちキュー（`web/src/pending.ts`、IndexedDB）：要素は `localId`（端末で振る）と、応答で分かる `photoId`。送る前に積み、応答が uploaded なら消す、pending なら photoId を書き足す。

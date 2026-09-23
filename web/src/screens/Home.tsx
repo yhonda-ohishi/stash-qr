@@ -87,6 +87,9 @@ function TopContainers() {
   return (
     <section>
       <h2>場所</h2>
+      <p class="muted">
+        <a href="/app/new">写真なしで作る (棚・部屋など)</a>
+      </p>
       {load.error && <p class="error">{errorText(load.error)}</p>}
       {load.data && !load.data.length && <p class="muted">まだコンテナがありません</p>}
       {load.data && load.data.length > 0 && (
