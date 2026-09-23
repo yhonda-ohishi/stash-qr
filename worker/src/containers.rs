@@ -637,7 +637,11 @@ pub async fn empty(mut req: Request, ctx: Ctx) -> Result<Response> {
             "UPDATE assets SET container_id = NULL, updated_at = {NOW} WHERE container_id = ?1"
         ))
         .bind(&binds[..1])?;
-    // 5. コンテナが存在したかどうかで成否を見る (changes = 1 なら存在した)。
+    // 5. 写真の紐付けを外す (送信待ちの行も含めて外す。写真の行・Flickr は残す)。
+    let unlink_photos = d1
+        .prepare("UPDATE photos SET container_id = NULL WHERE container_id = ?1")
+        .bind(&binds[..1])?;
+    // 6. コンテナが存在したかどうかで成否を見る (changes = 1 なら存在した)。
     let touch = d1
         .prepare(format!(
             "UPDATE containers SET updated_at = {NOW} WHERE id = ?1"
@@ -649,16 +653,18 @@ pub async fn empty(mut req: Request, ctx: Ctx) -> Result<Response> {
             clear_stock,
             asset_moves,
             release_assets,
+            unlink_photos,
             touch,
         ])
         .await?;
 
-    if db::changes(&r[4])? == 1 {
+    if db::changes(&r[5])? == 1 {
         return json(
             200,
             &serde_json::json!({
                 "stock_rows": db::changes(&r[1])?,
                 "assets": db::changes(&r[3])?,
+                "photos": db::changes(&r[4])?,
             }),
         );
     }

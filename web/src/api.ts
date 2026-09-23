@@ -226,8 +226,8 @@ export function deleteContainer(id: string): Promise<void> {
   return request("DELETE", `/api/containers/${seg(id)}`);
 }
 
-/** 本数を全部 0 にし、個体を持ち出し中 (container_id = null) へ移す。子コンテナには触らない。 */
-export function emptyContainer(id: string): Promise<{ stock_rows: number; assets: number }> {
+/** 本数を全部 0 にし、個体を持ち出し中 (container_id = null) へ移し、写真の紐付けも外す。子コンテナには触らない。 */
+export function emptyContainer(id: string): Promise<{ stock_rows: number; assets: number; photos: number }> {
   return request("POST", `/api/containers/${seg(id)}/empty`, { confirm: true });
 }
 

@@ -175,7 +175,7 @@ CREATE TABLE photos (
 - `POST /api/containers/:id/move` `{ parent_id }` 循環チェック付き
 - `DELETE /api/containers/:id` 空の時のみ
 - `POST /api/containers/:id/stock` `{ item_type_id, delta, note }` 本数の出し入れ
-- `POST /api/containers/:id/empty` `{ confirm: true }` 中身を空にする。本数を全部 0 にし (movements に stock_out)、個体は持ち出し中へ (movements に asset_move、container_id NULL)。子コンテナには触らない
+- `POST /api/containers/:id/empty` `{ confirm: true }` 中身を空にする。本数を全部 0 にし (movements に stock_out)、個体は持ち出し中へ (movements に asset_move、container_id NULL)。写真の紐付けも外す (写真自体・判定の履歴は残る)。コンテナ画面と QR の閲覧ページ (/c/:id) から前の写真が消える。子コンテナには触らない
 - `POST /api/containers/:id/judge` コンテナ写真 → 提案（数量物＋個体候補）。Flickr 保存を並行
 - `GET /api/judgements/:id` 確定していないコンテナ判定を `POST /api/containers/:id/judge` と同じ形で返す（保存済みの提案から再開。照合と current は読んだ時点、photo は判定に結ばれた最新の写真か null）。無い 404、確定済み 409、ラベル判定 422
 - `POST /api/judgements/:id/confirm` `{ final }` stock と assets に反映し、final_json を保存。`final.new_assets`（`{ category, name, maker, model, serial }` の配列、任意）は未登録の個体を同じ batch でこのコンテナに登録し、品目は category × name で探して無ければ個体管理で作る（既存個体と同じ (maker, model, serial) は 409、数量管理の同名品目・stock の名前行と同名は 422）
