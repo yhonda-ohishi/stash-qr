@@ -424,6 +424,86 @@ describe("stock", () => {
   });
 });
 
+describe("empty (中身を空にする)", () => {
+  test("本数を stock_out で記録して消す。個体は持ち出し中へ (movements に asset_move)", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const t1 = await post("/api/item-types", { category: "cable", name: `E1-${Date.now()}`, tracking: "quantity" });
+    const t2 = await post("/api/item-types", { category: "cable", name: `E2-${Date.now()}`, tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: t1.body.id, delta: 3 });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: t2.body.id, delta: 5 });
+    const created = await post("/api/assets", {
+      category: "device",
+      maker: "M",
+      model: "Model",
+      serial: `E-${box.body.id}`,
+      container_id: box.body.id,
+    });
+    assert.equal(created.status, 201);
+    const asset = created.body.asset;
+    const movesBefore = sql(`SELECT COUNT(*) AS n FROM movements`)[0].n;
+
+    const r = await post(`/api/containers/${box.body.id}/empty`, { confirm: true });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body, { stock_rows: 2, assets: 1 });
+
+    assert.deepEqual((await call("GET", `/api/containers/${box.body.id}`)).body.stock, [], "本数は空");
+    assert.deepEqual(sql(`SELECT container_id FROM assets WHERE id = '${asset.id}'`), [{ container_id: null }], "個体は持ち出し中");
+    assert.deepEqual(
+      sql(`SELECT kind, qty_delta, note FROM movements WHERE container_id = '${box.body.id}' AND kind = 'stock_out' ORDER BY qty_delta`),
+      [
+        { kind: "stock_out", qty_delta: -5, note: "emptied" },
+        { kind: "stock_out", qty_delta: -3, note: "emptied" },
+      ],
+    );
+    assert.deepEqual(
+      sql(`SELECT kind, from_id, to_id, note FROM movements WHERE asset_id = '${asset.id}' AND kind = 'asset_move' AND note = 'emptied'`),
+      [{ kind: "asset_move", from_id: box.body.id, to_id: null, note: "emptied" }],
+    );
+    assert.equal(sql(`SELECT COUNT(*) AS n FROM movements`)[0].n, movesBefore + 3, "stock_out 2 行 + asset_move 1 行");
+
+    // 空になったので削除できる
+    assert.equal((await call("DELETE", `/api/containers/${box.body.id}`)).status, 204);
+  });
+
+  test("空のコンテナへは冪等に 200 {0,0}、無い id は 404", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    assert.deepEqual((await post(`/api/containers/${box.body.id}/empty`, { confirm: true })).body, {
+      stock_rows: 0,
+      assets: 0,
+    });
+    assert.equal((await post(`/api/containers/ZZZZZZ/empty`, { confirm: true })).status, 404);
+  });
+
+  test("子コンテナがあれば empty の後も削除は 409 のまま", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    await post("/api/containers", { kind: "bag", parent_id: box.body.id });
+    assert.equal((await post(`/api/containers/${box.body.id}/empty`, { confirm: true })).status, 200);
+    assert.equal((await call("DELETE", `/api/containers/${box.body.id}`)).status, 409);
+  });
+
+  test("Content-Type が JSON でない、または confirm が true でない: 何も変えず拒否", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const it = await post("/api/item-types", { category: "cable", name: `E3-${Date.now()}`, tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: it.body.id, delta: 1 });
+
+    const badCt = await fetchFresh(`${base}/api/containers/${box.body.id}/empty`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", "cf-access-jwt-assertion": jwt() },
+      body: JSON.stringify({ confirm: true }),
+    });
+    assert.equal(badCt.status, 415);
+
+    const badConfirm = await post(`/api/containers/${box.body.id}/empty`, { confirm: false });
+    assert.equal(badConfirm.status, 400);
+
+    assert.deepEqual(
+      (await call("GET", `/api/containers/${box.body.id}`)).body.stock.map((s) => s.qty),
+      [1],
+      "本数は変わっていない",
+    );
+  });
+});
+
 describe("item types", () => {
   test("重複は 409 で既存を返す・検索", async () => {
     const a = await post("/api/item-types", { category: "cable", name: "C-C", tracking: "quantity" });

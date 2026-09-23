@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import {
   ApiError,
   deleteContainer,
+  emptyContainer,
   getContainer,
   listItemTypes,
   patchContainer,
@@ -78,7 +79,7 @@ export function ContainerScreen({ params, query }: ScreenProps) {
       {d.container.memo && <p>{d.container.memo}</p>}
       <Thumbs photos={d.photos} />
 
-      <h2>中身</h2>
+      <h2>中のコンテナ</h2>
       {d.children.length ? (
         <ul class="list">
           {d.children.map((c) => (
@@ -89,7 +90,7 @@ export function ContainerScreen({ params, query }: ScreenProps) {
           ))}
         </ul>
       ) : (
-        <p class="muted">(なし)</p>
+        <p class="muted">中のコンテナはありません</p>
       )}
       <a class="button primary" href={`/app/shoot?parent=${encodeURIComponent(d.container.id)}`}>
         この中に撮影して登録
@@ -149,6 +150,11 @@ export function ContainerScreen({ params, query }: ScreenProps) {
 
       <EditContainer container={d.container} onSaved={load.reload} />
       <p>
+        {(d.stock.length > 0 || d.assets.length > 0) && (
+          <>
+            <EmptyContents container={d.container} assetCount={d.assets.length} onDone={load.reload} />{" "}
+          </>
+        )}
         <DeleteContainer
           container={d.container}
           parentId={d.breadcrumb.length > 1 ? d.breadcrumb[d.breadcrumb.length - 2].id : null}
@@ -316,6 +322,50 @@ function Unconfirmed({
   );
 }
 
+/** 本数を 0 にし、個体を持ち出し中 (場所なし) へ移す。削除の「空のときだけ」を変えず、そこへ持っていく手段。 */
+function EmptyContents({
+  container,
+  assetCount,
+  onDone,
+}: {
+  container: ContainerDetail["container"];
+  assetCount: number;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const run = async () => {
+    if (
+      !confirm(`本数を 0 にし、個体 ${assetCount} 台を持ち出し中 (場所なし) にします。よいですか？`)
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const r = await emptyContainer(container.id);
+      setResult(`本数 ${r.stock_rows} 行を 0 にし、個体 ${r.assets} 台を持ち出し中にしました`);
+      onDone();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span>
+      <button disabled={busy} onClick={run}>
+        中身を空にする
+      </button>
+      {error && <span class="error"> {error}</span>}
+      {result && <span class="muted"> {result}</span>}
+    </span>
+  );
+}
+
 /** 確認してから削除する。空でなければ 409 をそのまま出す。成功したら親のコンテナ (無ければホーム) へ。 */
 function DeleteContainer({
   container,
@@ -335,7 +385,13 @@ function DeleteContainer({
       await deleteContainer(container.id);
       navigate(parentId ? `/app/c/${encodeURIComponent(parentId)}` : "/app", { replace: true });
     } catch (err) {
-      setError(errorText(err));
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          `${errorText(err)} — 本数・個体は「中身を空にする」で空にできます。中のコンテナは先に移すか削除してください`,
+        );
+      } else {
+        setError(errorText(err));
+      }
       setBusy(false);
     }
   };
