@@ -77,7 +77,9 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
 }
 
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -86,9 +88,11 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
         Err(r) => return r,
     };
     let str_field = |k: &str| body.get(k).and_then(Value::as_str).map(str::trim);
-    let (Some(category), Some(name), Some(tracking)) =
-        (str_field("category"), str_field("name"), str_field("tracking"))
-    else {
+    let (Some(category), Some(name), Some(tracking)) = (
+        str_field("category"),
+        str_field("name"),
+        str_field("tracking"),
+    ) else {
         return error(400, "category, name, tracking are required strings");
     };
     if category.is_empty() || name.is_empty() {
@@ -136,6 +140,9 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
     if inserted {
         json(201, &item)
     } else {
-        json(409, &serde_json::json!({ "error": "item type already exists", "item_type": item }))
+        json(
+            409,
+            &serde_json::json!({ "error": "item type already exists", "item_type": item }),
+        )
     }
 }

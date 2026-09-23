@@ -104,7 +104,13 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
                  WHERE NOT EXISTS (SELECT 1 FROM containers WHERE id = ?1)
                    AND (?2 IS NULL OR EXISTS (SELECT 1 FROM containers WHERE id = ?2))"
             ))
-            .bind(&[text(&id), opt_text(parent.as_deref()), text(kind), opt_text(name), opt_text(memo)])?
+            .bind(&[
+                text(&id),
+                opt_text(parent.as_deref()),
+                text(kind),
+                opt_text(name),
+                opt_text(memo),
+            ])?
             .run()
             .await?;
         if db::changes(&res)? == 1 {
@@ -113,10 +119,10 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
             };
             return json(201, &c);
         }
-        if let Some(p) = &parent {
-            if !db::exists(&d1, "containers", p).await? {
-                return error(404, "parent container not found");
-            }
+        if let Some(p) = &parent
+            && !db::exists(&d1, "containers", p).await?
+        {
+            return error(404, "parent container not found");
         }
     }
     error(500, "could not allocate a container id")
@@ -190,7 +196,9 @@ pub async fn get(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
              )
              SELECT id, kind, name FROM a ORDER BY depth DESC"
         )),
-        d1.prepare("SELECT id, kind, name FROM containers WHERE parent_id = ?1 ORDER BY kind, name, id"),
+        d1.prepare(
+            "SELECT id, kind, name FROM containers WHERE parent_id = ?1 ORDER BY kind, name, id",
+        ),
         d1.prepare(
             "SELECT s.item_type_id, t.category, t.name, s.qty
              FROM stock s JOIN item_types t ON t.id = s.item_type_id
@@ -250,8 +258,14 @@ pub async fn patch(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
         Ok(b) => b,
         Err(r) => return r,
     };
-    if let Some(k) = body.keys().find(|k| !matches!(k.as_str(), "name" | "kind" | "memo")) {
-        return error(400, &format!("unknown field: {k} (parent は /move で変える)"));
+    if let Some(k) = body
+        .keys()
+        .find(|k| !matches!(k.as_str(), "name" | "kind" | "memo"))
+    {
+        return error(
+            400,
+            &format!("unknown field: {k} (parent は /move で変える)"),
+        );
     }
 
     let mut sets = Vec::new();
@@ -356,10 +370,10 @@ pub async fn move_to(mut req: Request, ctx: RouteContext<()>) -> Result<Response
     if !db::exists(&d1, "containers", &id).await? {
         return error(404, "container not found");
     }
-    if let Some(p) = &to {
-        if !db::exists(&d1, "containers", p).await? {
-            return error(404, "parent container not found");
-        }
+    if let Some(p) = &to
+        && !db::exists(&d1, "containers", p).await?
+    {
+        return error(404, "parent container not found");
     }
     error(409, "cannot move a container into itself or its descendant")
 }
@@ -387,7 +401,10 @@ pub async fn delete(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
         return Ok(Response::empty()?.with_status(204));
     }
     if db::exists(&d1, "containers", &id).await? {
-        error(409, "container is not empty (children, stock or assets remain)")
+        error(
+            409,
+            "container is not empty (children, stock or assets remain)",
+        )
     } else {
         error(404, "container not found")
     }
