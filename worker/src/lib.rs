@@ -42,6 +42,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .delete_async("/api/containers/:id", containers::delete)
         .post_async("/api/containers/:id/move", containers::move_to)
         .post_async("/api/containers/:id/stock", containers::stock_delta)
+        .post_async("/api/containers/:id/empty", containers::empty)
         .post_async("/api/containers/:id/judge", judgements::judge_container)
         .get_async("/api/judgements/:id", judgements::get)
         .post_async("/api/judgements/:id/confirm", judgements::confirm)

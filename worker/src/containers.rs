@@ -572,6 +572,100 @@ pub async fn delete(_req: Request, ctx: Ctx) -> Result<Response> {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/containers/:id/empty   { confirm: true }
+// ---------------------------------------------------------------------------
+
+/// 中身 (本数・個体) を空にする。削除は空のときだけ許すルールを変えずに、
+/// 削除できる状態へ持っていく手段。本数は movements に stock_out で残して stock を消し、
+/// 個体は movements に asset_move (to_id NULL) で残して「持ち出し中」へ (container_id = NULL)。
+/// 子コンテナには触らない (残っていれば削除は今まで通り 409)。
+///
+/// 本文なしの POST は preflight の無い simple request になり別サイトから送りやすいため、
+/// JSON の Content-Type と `{"confirm": true}` を必須にする (他の口の本文の読み方に上乗せ)。
+pub async fn empty(mut req: Request, ctx: Ctx) -> Result<Response> {
+    let Some(id) = path_id(&ctx) else {
+        return error(404, "container not found");
+    };
+    let ct = req
+        .headers()
+        .get("Content-Type")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let ct = ct
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if ct != "application/json" {
+        return error(415, "Content-Type must be application/json");
+    }
+    let body = match read_object(&mut req).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    if body.get("confirm") != Some(&Value::Bool(true)) {
+        return error(400, "body must be {\"confirm\": true}");
+    }
+
+    let d1 = db::db(&ctx)?;
+    let binds = [text(&id), text(&ctx.data.0)];
+    // 1. 本数の減算を movements に記録 (qty > 0 の行だけ)。
+    let stock_out = d1
+        .prepare(format!(
+            "INSERT INTO movements (id, at, actor, kind, container_id, item_type_id, qty_delta, note)
+             SELECT lower(hex(randomblob(8))), {NOW}, ?2, 'stock_out', ?1, item_type_id, -qty, 'emptied'
+             FROM stock WHERE container_id = ?1 AND qty > 0"
+        ))
+        .bind(&binds)?;
+    // 2. 本数を消す。
+    let clear_stock = d1
+        .prepare("DELETE FROM stock WHERE container_id = ?1")
+        .bind(&binds[..1])?;
+    // 3. 個体の移動 (持ち出し中へ) を記録。
+    let asset_moves = d1
+        .prepare(format!(
+            "INSERT INTO movements (id, at, actor, kind, asset_id, item_type_id, from_id, to_id, note)
+             SELECT lower(hex(randomblob(8))), {NOW}, ?2, 'asset_move', a.id, a.item_type_id, ?1, NULL, 'emptied'
+             FROM assets a WHERE a.container_id = ?1"
+        ))
+        .bind(&binds)?;
+    // 4. 個体を持ち出し中へ。
+    let release_assets = d1
+        .prepare(format!(
+            "UPDATE assets SET container_id = NULL, updated_at = {NOW} WHERE container_id = ?1"
+        ))
+        .bind(&binds[..1])?;
+    // 5. コンテナが存在したかどうかで成否を見る (changes = 1 なら存在した)。
+    let touch = d1
+        .prepare(format!(
+            "UPDATE containers SET updated_at = {NOW} WHERE id = ?1"
+        ))
+        .bind(&binds[..1])?;
+    let r = d1
+        .batch(vec![
+            stock_out,
+            clear_stock,
+            asset_moves,
+            release_assets,
+            touch,
+        ])
+        .await?;
+
+    if db::changes(&r[4])? == 1 {
+        return json(
+            200,
+            &serde_json::json!({
+                "stock_rows": db::changes(&r[1])?,
+                "assets": db::changes(&r[3])?,
+            }),
+        );
+    }
+    error(404, "container not found")
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/containers/:id/stock   { item_type_id, delta, note }
 // ---------------------------------------------------------------------------
 
