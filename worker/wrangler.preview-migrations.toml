@@ -1,0 +1,10 @@
+# Preview 用 D1 (stash-qr-preview) に migration を当てるためだけの設定。
+#   npx wrangler d1 migrations apply DB --remote -c wrangler.preview-migrations.toml
+name = "stash-qr"
+account_id = "24b45709d060d957340180e995f0d373"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stash-qr-preview"
+database_id = "07672c8f-fdeb-45f2-a9c5-4b2c7ff4bcae"
+migrations_dir = "migrations"

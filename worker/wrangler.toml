@@ -3,10 +3,12 @@ account_id = "24b45709d060d957340180e995f0d373"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-01"
 
-# 入口は stash.mtamaramu.com (Cloudflare Access の後ろ) だけ。workers.dev と
-# preview URL は Access を通らないので閉じる (Worker 側でも JWT を検証するが二重に塞ぐ)。
+# 本番の入口は stash.mtamaramu.com (Cloudflare Access の後ろ) だけ。workers.dev は閉じる。
 workers_dev = false
-preview_urls = false
+# Previews (npx wrangler preview) を <preview>-stash-qr.<subdomain>.workers.dev で開くために有効。
+# 本番の Version URL も workers.dev に出るが、Worker が毎回 Access の JWT を検証するので
+# 未ログインは 401 (本番の AUD しか通らない)。Preview のホスト名は別の Access アプリで守る。
+preview_urls = true
 
 # QR に焼くドメイン。Access アプリ "stash-qr" がこの hostname を保護している。
 routes = [{ pattern = "stash.mtamaramu.com", custom_domain = true }]
@@ -37,3 +39,20 @@ GEMINI_MODEL = "gemini-3.8-flash"
 #   npx wrangler secret put FLICKR_CONSUMER_SECRET
 #   npx wrangler secret put FLICKR_ACCESS_TOKEN_JSON   # {"token","secret","userNsid","username"} の JSON
 # 未設定の間は写真が送信待ち (status=pending) に残るだけで、他の API は動く。
+
+# ---------------------------------------------------------------------------
+# Previews (npx wrangler preview)。PR やブランチを本番と切り離して試す。
+# D1 は Preview 用の stash-qr-preview に差し替える (本番のデータを汚さない)。
+# Preview 用 DB への migration: npx wrangler d1 migrations apply DB --remote -c wrangler.preview-migrations.toml
+# Access は Preview のホスト名を守る別アプリなので AUD が本番と違う。
+# ---------------------------------------------------------------------------
+[previews.vars]
+ACCESS_ISSUER = "https://mtamaramu.cloudflareaccess.com"
+ACCESS_AUD = ""
+GEMINI_MODEL = "gemini-3.8-flash"
+
+[[previews.d1_databases]]
+binding = "DB"
+database_name = "stash-qr-preview"
+database_id = "07672c8f-fdeb-45f2-a9c5-4b2c7ff4bcae"
+migrations_dir = "migrations"
