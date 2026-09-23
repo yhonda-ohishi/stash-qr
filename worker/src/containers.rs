@@ -132,8 +132,22 @@ pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
 // GET /api/containers/:id
 // ---------------------------------------------------------------------------
 
+/// パンくず: 自分から親へたどり、最上位 → 自分の順に並べる (?1 = コンテナ ID)。
+pub(crate) fn breadcrumb_sql() -> String {
+    format!(
+        "WITH RECURSIVE a(id, parent_id, kind, name, depth) AS (
+           SELECT id, parent_id, kind, name, 0 FROM containers WHERE id = ?1
+           UNION ALL
+           SELECT c.id, c.parent_id, c.kind, c.name, a.depth + 1
+           FROM containers c JOIN a ON c.id = a.parent_id
+           WHERE a.depth < {MAX_DEPTH}
+         )
+         SELECT id, kind, name FROM a ORDER BY depth DESC"
+    )
+}
+
 #[derive(Deserialize, Serialize)]
-struct Crumb {
+pub(crate) struct Crumb {
     id: String,
     kind: String,
     name: Option<String>,
@@ -185,17 +199,7 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
     );
     let stmts = vec![
         d1.prepare(format!("SELECT {COLS} FROM containers WHERE id = ?1")),
-        // パンくず: 自分から親へたどり、最上位 → 自分の順に並べる。
-        d1.prepare(format!(
-            "WITH RECURSIVE a(id, parent_id, kind, name, depth) AS (
-               SELECT id, parent_id, kind, name, 0 FROM containers WHERE id = ?1
-               UNION ALL
-               SELECT c.id, c.parent_id, c.kind, c.name, a.depth + 1
-               FROM containers c JOIN a ON c.id = a.parent_id
-               WHERE a.depth < {MAX_DEPTH}
-             )
-             SELECT id, kind, name FROM a ORDER BY depth DESC"
-        )),
+        d1.prepare(breadcrumb_sql()),
         d1.prepare(
             "SELECT id, kind, name FROM containers WHERE parent_id = ?1 ORDER BY kind, name, id",
         ),

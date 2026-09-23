@@ -3,10 +3,12 @@
 use serde::Serialize;
 use worker::*;
 
+mod assets;
 mod auth;
 mod containers;
 mod db;
 mod flickr;
+mod gemini;
 mod id;
 mod item_types;
 mod oauth1;
@@ -39,6 +41,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/containers/:id/stock", containers::stock_delta)
         .get_async("/api/item-types", item_types::list)
         .post_async("/api/item-types", item_types::create)
+        .post_async("/api/assets/judge-label", assets::judge_label)
+        .post_async("/api/assets", assets::create)
+        .get_async("/api/assets/:id", assets::get)
+        .patch_async("/api/assets/:id", assets::patch)
+        .post_async("/api/assets/:id/move", assets::move_to)
         .post_async("/api/photos", photos::create)
         .get_async("/api/photos", photos::list)
         .get_async("/api/photos/:id", photos::image)
