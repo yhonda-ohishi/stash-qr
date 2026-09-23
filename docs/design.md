@@ -167,6 +167,7 @@ CREATE TABLE photos (
 ## API
 
 - `POST /api/containers` 作成（parent_id 任意）
+- `GET /api/containers?parent=` 一覧。省略は一番上、指定はその直下。直下の子の数・本数の合計・個体数を集計して返す。存在しない parent は 404
 - `GET /api/containers/:id` パンくず、直下の子、stock、assets、子孫込み合計、サムネイル
 - `PATCH /api/containers/:id` 名前・種別・メモ変更
 - `POST /api/containers/:id/move` `{ parent_id }` 循環チェック付き
@@ -193,14 +194,19 @@ CREATE TABLE photos (
 - 先行実装 ippoan/rust-alc-api の `alc-notify/src/extract.rs` と同じく `responseSchema` で形を固定し、`temperature` は 0。キーは URL でなくヘッダで送る。
 - 出力は JSON のみ。
 - コンテナ写真：
-  `{ "stock": [ { "category", "name", "qty", "attrs", "confidence" } ], "assets": [ { "maker", "model", "serial", "description", "confidence" } ] }`
+  `{ "stock": [ { "category", "name", "qty", "attrs", "confidence" } ], "assets": [ { "maker", "model", "serial", "description", "confidence" } ], "container": { "kind", "name" } }`
+  （container はコンテナ自体の種別・名前の提案。任意で、確定の final.container として送るとコンテナに書き込む）
 - ラベル写真：`{ "maker", "model", "serial", "other_text", "confidence" }`
 - ケーブルは両端の端子（A / C / micro-B / mini-B / Lightning / 3.5mm / DC など）を attrs に入れ、name は `端子1-端子2`。判断できない物は category=other, name="不明"。
 - 撮影前提（ケーブル）：1 本ずつビニタイで束ね、両端を袋の同じ辺に揃えて並べる。袋越しで可。実測テストで全問正解。
 
 ## PWA（スマホの画面）
 
-- URL：画面は `/app/` の下（ホーム `/app`、コンテナ `/app/c/<id>`、個体 `/app/a/<id>`、2 スキャン移動 `/app/move`）。manifest の start_url も `/app/`。
+- URL：画面は `/app/` の下（ホーム `/app`、撮影して登録 `/app/shoot`（`?parent=<id>` 任意）、コンテナ `/app/c/<id>`、個体 `/app/a/<id>`、2 スキャン移動 `/app/move`）。manifest の start_url も `/app/`。
+- ホームの「場所」節：一番上のコンテナ一覧（名前・種別・直下の子/本数/個体の数）。コンテナ画面には編集（PATCH）・削除（DELETE、空でなければ 409 をそのまま表示）を出す
+- 撮影して登録：ホーム/コンテナ画面の「撮影して登録」(`/app/shoot`) で写真を撮ると、種別 `bag` の仮コンテナを `POST /api/containers` で先に作り、そのままコンテナ判定 (`/app/c/<id>/judge?new=1`) へ渡す（画像は URL に載せず `web/src/shoot.ts` のモジュール内変数で 1 回だけ受け渡す）。
+  判定画面は `?new=1` のとき撮影の段を飛ばして自動送信し、編集リストの上に種別・名前欄（AI の proposal.container が初期値）を出し、確定の final.container でコンテナに書き込む。確定後は `?created=1` でコンテナ画面のラベル印刷ボタンを目立たせる。
+  AI 判定に失敗したときは、作ったばかりの空のコンテナを「削除して撮り直す」(`DELETE`、空なので通る) で消せる
   QR の `/c/<id>`・`/a/<id>` は Worker の簡易 HTML のまま残し、そこから「アプリで開く」で `/app/...` へリンクする。PWA の中で QR を読んだら `/app/c/<id>`・`/app/a/<id>` へ遷移する。ルート表は `web/src/routes.tsx` の 1 か所
 - 端末は Android の Chrome だけ（BarcodeDetector があるもの。無ければ読めない旨を出す）
 - 写真は送る前に PWA で長辺 2048px 以下・JPEG 品質 0.85 に縮める（`web/src/image.ts`）

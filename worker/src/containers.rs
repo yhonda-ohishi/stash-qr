@@ -130,6 +130,62 @@ pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/containers?parent=<id>
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ListQuery {
+    parent: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ListItem {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) name: Option<String>,
+    pub(crate) child_count: i64,
+    pub(crate) stock_total: i64,
+    pub(crate) asset_count: i64,
+}
+
+/// `parent` 省略 = 一番上 (parent_id IS NULL)、`parent=<id>` = その直下。
+/// 存在しない parent は 404。件数・本数は直下だけ (子孫は含まない)。
+pub async fn list(req: Request, ctx: Ctx) -> Result<Response> {
+    let q = req.query::<ListQuery>()?;
+    let parent = match q.parent {
+        None => None,
+        Some(s) => match normalize_container_id(&s) {
+            Some(id) => Some(id),
+            None => return error(404, "parent container not found"),
+        },
+    };
+
+    let d1 = db::db(&ctx)?;
+    if let Some(p) = &parent
+        && !db::exists(&d1, "containers", p).await?
+    {
+        return error(404, "parent container not found");
+    }
+
+    let rows = d1
+        .prepare(
+            "SELECT c.id, c.kind, c.name,
+               (SELECT COUNT(*) FROM containers cc WHERE cc.parent_id = c.id) AS child_count,
+               COALESCE((SELECT SUM(s.qty) FROM stock s WHERE s.container_id = c.id), 0) AS stock_total,
+               (SELECT COUNT(*) FROM assets a WHERE a.container_id = c.id) AS asset_count
+             FROM containers c
+             WHERE (?1 IS NULL AND c.parent_id IS NULL) OR c.parent_id = ?1
+             ORDER BY c.name, c.id
+             LIMIT 500",
+        )
+        .bind(&[opt_text(parent.as_deref())])?
+        .all()
+        .await?;
+    let items: Vec<ListItem> = rows.results::<ListItem>()?;
+    json(200, &serde_json::json!({ "containers": items }))
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/containers/:id
 // ---------------------------------------------------------------------------
 

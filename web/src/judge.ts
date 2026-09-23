@@ -2,7 +2,7 @@
 //
 // 確定はコンテナ直下の本数を final.stock とぴったり同じにする (載っていない品目は 0 本)。
 // だから判定の提案に無くても今ある品目は行として出し、既定では今の本数を残す。
-import type { Asset, AssetLine, ConfirmFinal, ConfirmStockLine, JudgeResult, StockLine } from "./api";
+import type { Asset, AssetLine, ConfirmFinal, ConfirmStockLine, JudgedContainer, JudgeResult, StockLine } from "./api";
 
 /** 数量物の編集行。`itemTypeId` があれば既存品目 (category・name は表示用)、無ければ新しい品目。 */
 export type StockRow = {
@@ -33,10 +33,25 @@ export type AssetRow = {
   pick: string | null;
 };
 
-export type EditState = { stock: StockRow[]; assets: AssetRow[] };
+/** コンテナ自体の種別・名前の編集行。「撮影して登録」(`?new=1`) のときだけ画面に出す。 */
+export type ContainerRow = { kind: string; name: string };
 
-/** 判定の応答から編集リストの初期値を作る。 */
-export function initialRows(r: JudgeResult): EditState {
+export type EditState = { stock: StockRow[]; assets: AssetRow[]; container?: ContainerRow };
+
+/** 判定の応答 (proposal) から container の提案を読む。無い/形が違えば null。 */
+export function proposalContainer(proposal: unknown): JudgedContainer | null {
+  if (!proposal || typeof proposal !== "object") return null;
+  const c = (proposal as { container?: unknown }).container;
+  if (!c || typeof c !== "object") return null;
+  const kind = (c as { kind?: unknown }).kind;
+  const name = (c as { name?: unknown }).name;
+  if (typeof kind !== "string") return null;
+  return { kind, name: typeof name === "string" ? name : null };
+}
+
+/** 判定の応答から編集リストの初期値を作る。`withContainer` なら種別・名前の編集行も添える
+ * (「撮影して登録」で作ったばかりの仮コンテナのとき)。初期値は AI の提案、無ければ bag / 空。 */
+export function initialRows(r: JudgeResult, opts: { withContainer?: boolean } = {}): EditState {
   const currentQty = new Map(r.current.stock.map((s) => [s.item_type_id, s.qty]));
   const byId = new Map(r.current.stock.map((s) => [s.item_type_id, s]));
   const proposed = new Set<string>();
@@ -71,7 +86,9 @@ export function initialRows(r: JudgeResult): EditState {
     candidates: a.candidates,
     pick: (a.match === "high" || a.match === "medium") && a.candidates[0] ? a.candidates[0].id : null,
   }));
-  return { stock, assets };
+  if (!opts.withContainer) return { stock, assets };
+  const containerProposal = proposalContainer(r.proposal);
+  return { stock, assets, container: { kind: containerProposal?.kind ?? "bag", name: containerProposal?.name ?? "" } };
 }
 
 function currentRow(s: StockLine): StockRow {
@@ -137,7 +154,15 @@ export function buildFinal(state: EditState): BuildResult {
     if (assets.includes(a.pick)) return { ok: false, error: "同じ個体を 2 行で選んでいます" };
     assets.push(a.pick);
   }
-  return { ok: true, final: { stock, assets } };
+
+  const final: ConfirmFinal = { stock, assets };
+  if (state.container) {
+    const kind = state.container.kind.trim();
+    if (!kind) return { ok: false, error: "コンテナの種別を入れてください" };
+    const name = state.container.name.trim();
+    final.container = name ? { kind, name } : { kind };
+  }
+  return { ok: true, final };
 }
 
 /** 個体の見出し (メーカー / 型番 / シリアル)。 */

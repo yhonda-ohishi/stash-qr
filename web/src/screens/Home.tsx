@@ -1,10 +1,10 @@
 import { useEffect, useState } from "preact/hooks";
-import { search, type SearchResult } from "../api";
+import { listContainers, search, type ContainerListItem, type SearchResult } from "../api";
 import { counts, discardUnsent, onPendingChange, resendAll } from "../pending";
 import { appPath } from "../qr";
 import { QrScanner } from "../QrScanner";
 import { navigate, type ScreenProps } from "../router";
-import { Crumbs, errorText } from "../ui";
+import { Crumbs, errorText, useLoad } from "../ui";
 
 export function Home({ query }: ScreenProps) {
   const [scanning, setScanning] = useState(false);
@@ -29,6 +29,12 @@ export function Home({ query }: ScreenProps) {
   return (
     <main>
       <h1>stash-qr</h1>
+
+      <section>
+        <a class="button primary shoot" href="/app/shoot">
+          撮影して登録
+        </a>
+      </section>
 
       <section>
         {scanning ? (
@@ -57,6 +63,8 @@ export function Home({ query }: ScreenProps) {
         {result && <SearchResults result={result} />}
       </section>
 
+      <TopContainers />
+
       <section>
         <a href="/app/move">2 スキャン移動</a>
       </section>
@@ -72,6 +80,36 @@ export function Home({ query }: ScreenProps) {
       <PendingPanel />
     </main>
   );
+}
+
+function TopContainers() {
+  const load = useLoad(() => listContainers(), "top");
+  return (
+    <section>
+      <h2>場所</h2>
+      {load.error && <p class="error">{errorText(load.error)}</p>}
+      {load.data && !load.data.length && <p class="muted">まだコンテナがありません</p>}
+      {load.data && load.data.length > 0 && (
+        <ul class="list">
+          {load.data.map((c) => (
+            <li key={c.id}>
+              <a href={`/app/c/${encodeURIComponent(c.id)}`}>{c.name || "-"}</a> <small>({c.kind})</small>
+              <ContainerSummary c={c} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ContainerSummary({ c }: { c: ContainerListItem }) {
+  const parts: string[] = [];
+  if (c.child_count) parts.push(`子 ${c.child_count}`);
+  if (c.stock_total) parts.push(`本数 ${c.stock_total}`);
+  if (c.asset_count) parts.push(`個体 ${c.asset_count}`);
+  if (!parts.length) return null;
+  return <small class="muted"> · {parts.join(" / ")}</small>;
 }
 
 function SearchResults({ result }: { result: SearchResult }) {

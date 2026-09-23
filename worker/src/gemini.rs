@@ -162,6 +162,8 @@ pub const CONTAINER_PROMPT: &str = "\
   - maker / model / serial: 本体に読める文字だけ。読めなければ推測せず null
   - description: 見た目の短い説明 (例: 黒い小型のレシートプリンタ)
   - confidence: その行の確からしさ (0〜1)
+- container: 写っている袋・箱・棚など入れ物自体について、種別 (kind) と、中身が分かる短い日本語の名前
+  (name。例: USB ケーブルの袋) を付けてください
 ケーブルは 1 本ずつ束ねて両端を同じ辺に揃えてあります。端子の形を見て数えてください。";
 
 /// 指示文に登録済みの数量品目を添える。同じ物に同じ名前を付けさせ、表記揺れで品目が増えるのを防ぐ。
@@ -215,6 +217,15 @@ pub fn container_schema() -> Value {
                     },
                     "required": ["description", "confidence"]
                 }
+            },
+            "container": {
+                "type": "OBJECT",
+                "nullable": true,
+                "properties": {
+                    "kind": { "type": "STRING", "enum": ["bag", "box", "shelf", "case", "drawer", "other"] },
+                    "name": { "type": "STRING" }
+                },
+                "required": ["kind"]
             }
         },
         "required": ["stock", "assets"]

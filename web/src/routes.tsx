@@ -7,10 +7,12 @@ import { JudgeScreen } from "./screens/JudgeScreen";
 import { LabelScreen } from "./screens/LabelScreen";
 import { MoveScreen } from "./screens/MoveScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
+import { ShootScreen } from "./screens/ShootScreen";
 
 export const routes: Route[] = [
   { pattern: "/", screen: Home },
   { pattern: "/app", screen: Home },
+  { pattern: "/app/shoot", screen: ShootScreen },
   { pattern: "/app/c/:id", screen: ContainerScreen },
   { pattern: "/app/a/:id", screen: AssetScreen },
   { pattern: "/app/move", screen: MoveScreen },

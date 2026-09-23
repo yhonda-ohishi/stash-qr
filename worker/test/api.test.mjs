@@ -348,6 +348,36 @@ describe("containers", () => {
     assert.equal((await call("DELETE", `/api/containers/${p.body.id}`)).status, 204);
     assert.equal((await call("DELETE", `/api/containers/${p.body.id}`)).status, 404);
   });
+
+  test("一覧: トップ・parent 指定・直下の件数集計・存在しない parent・未認証", async () => {
+    const it = await post("/api/item-types", { category: "cable", name: `L-${Date.now()}`, tracking: "quantity" });
+    const room = await post("/api/containers", { kind: "room", name: "L1" });
+    const box = await post("/api/containers", { kind: "box", name: "L2", parent_id: room.body.id });
+    const bag = await post("/api/containers", { kind: "bag", name: "L3", parent_id: room.body.id });
+    const grandchild = await post("/api/containers", { kind: "bag", parent_id: box.body.id });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: it.body.id, delta: 3 });
+    await post("/api/assets", { category: "device", maker: "M", model: "Model", serial: `S-${room.body.id}`, container_id: box.body.id });
+
+    const top = await call("GET", "/api/containers");
+    assert.equal(top.status, 200);
+    const roomItem = top.body.containers.find((c) => c.id === room.body.id);
+    assert.ok(roomItem, "トップ一覧に含まれる");
+    assert.equal(roomItem.child_count, 2, "直下だけ (孫は含まない)");
+
+    const under = await call("GET", `/api/containers?parent=${room.body.id}`);
+    assert.equal(under.status, 200);
+    assert.deepEqual(under.body.containers.map((c) => c.id).sort(), [bag.body.id, box.body.id].sort());
+    const boxItem = under.body.containers.find((c) => c.id === box.body.id);
+    assert.equal(boxItem.child_count, 1);
+    assert.equal(boxItem.stock_total, 3, "直下の本数の合計");
+    assert.equal(boxItem.asset_count, 1);
+    assert.equal(boxItem.stock_total, 3);
+    assert.deepEqual((await call("GET", `/api/containers?parent=${box.body.id}`)).body.containers.map((c) => c.id), [grandchild.body.id]);
+
+    assert.equal((await call("GET", "/api/containers?parent=ZZZZZZ")).status, 404);
+    assert.equal((await call("GET", "/api/containers?parent=not-an-id")).status, 404);
+    assert.equal((await call("GET", "/api/containers", undefined, { token: null })).status, 401);
+  });
 });
 
 describe("stock", () => {
@@ -1000,6 +1030,37 @@ describe("コンテナ判定と確定", () => {
     const empty = await confirm(jid, { stock: [], assets: [] });
     assert.equal(empty.status, 200, JSON.stringify(empty.body));
     assert.deepEqual(stockOf(box.body.id), []);
+  });
+
+  test("AI がコンテナ自体の種別・名前を提案し、確定の final.container で書き換わる。二重確定は変えない", async () => {
+    const box = await post("/api/containers", { kind: "box", name: "元の名前" });
+    gemini.container = { stock: [], assets: [], container: { kind: "bag", name: "USB ケーブルの袋" } };
+    const r = await judge(box.body.id);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.proposal.container, { kind: "bag", name: "USB ケーブルの袋" });
+
+    const ok = await confirm(r.body.judgement_id, { stock: [], assets: [], container: { kind: "bag", name: " USB ケーブルの袋 " } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const [c] = sql(`SELECT kind, name FROM containers WHERE id = '${box.body.id}'`);
+    assert.deepEqual(c, { kind: "bag", name: "USB ケーブルの袋" });
+
+    // final.container を送らない確定 (前の指示までの呼び出し) は今までどおり種別・名前を変えない
+    gemini.container = { stock: [], assets: [] };
+    const r2 = await judge(box.body.id);
+    const ok2 = await confirm(r2.body.judgement_id, { stock: [], assets: [] });
+    assert.equal(ok2.status, 200, JSON.stringify(ok2.body));
+    assert.deepEqual(sql(`SELECT kind, name FROM containers WHERE id = '${box.body.id}'`)[0], { kind: "bag", name: "USB ケーブルの袋" });
+
+    // 二重確定 (409) は種別・名前も変えない
+    const again = await confirm(r2.body.judgement_id, { stock: [], assets: [], container: { kind: "shelf", name: "変わらないはず" } });
+    assert.equal(again.status, 409);
+    assert.deepEqual(sql(`SELECT kind, name FROM containers WHERE id = '${box.body.id}'`)[0], { kind: "bag", name: "USB ケーブルの袋" });
+
+    // kind の無い/空の container は 400
+    gemini.container = { stock: [], assets: [] };
+    const r3 = await judge(box.body.id);
+    assert.equal((await confirm(r3.body.judgement_id, { stock: [], assets: [], container: { name: "no kind" } })).status, 400);
+    assert.equal((await confirm(r3.body.judgement_id, { stock: [], assets: [], container: { kind: "" } })).status, 400);
   });
 
   test("無いコンテナの判定は 404 で Gemini を呼ばない・未認証は 401", async () => {

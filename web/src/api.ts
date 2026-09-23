@@ -180,6 +180,42 @@ const seg = encodeURIComponent;
 // コンテナ・本数
 // ---------------------------------------------------------------------------
 
+/** `GET /api/containers?parent=` の 1 件 (containers.rs `ListItem`)。直下だけの集計。 */
+export type ContainerListItem = {
+  id: string;
+  kind: string;
+  name: string | null;
+  child_count: number;
+  stock_total: number;
+  asset_count: number;
+};
+
+/** `parentId` 省略/undefined で一番上。存在しない parent は 404。 */
+export async function listContainers(parentId?: string): Promise<ContainerListItem[]> {
+  const path = parentId ? `/api/containers?parent=${seg(parentId)}` : "/api/containers";
+  const r = await request<{ containers: ContainerListItem[] }>("GET", path);
+  return r.containers;
+}
+
+/** 本文は containers.rs `create` の入力そのまま (kind 必須)。 */
+export type CreateContainerBody = { kind: string; parent_id?: string | null; name?: string; memo?: string };
+
+export function createContainer(body: CreateContainerBody): Promise<Container> {
+  return request("POST", "/api/containers", body);
+}
+
+/** name・kind・memo だけ変更可 (parent_id は /move)。 */
+export type PatchContainerBody = { name?: string | null; kind?: string; memo?: string | null };
+
+export function patchContainer(id: string, body: PatchContainerBody): Promise<Container> {
+  return request("PATCH", `/api/containers/${seg(id)}`, body);
+}
+
+/** 空でなければ 409 (中身が残っている)。 */
+export function deleteContainer(id: string): Promise<void> {
+  return request("DELETE", `/api/containers/${seg(id)}`);
+}
+
 export function getContainer(id: string): Promise<ContainerDetail> {
   return request("GET", `/api/containers/${seg(id)}`);
 }
@@ -326,6 +362,9 @@ export type JudgedAsset = {
   candidates: Asset[];
 };
 
+/** AI が提案するコンテナ自体の種別・名前 (proposal.container、gemini.rs container_schema)。 */
+export type JudgedContainer = { kind: string; name: string | null };
+
 /** `POST /api/containers/:id/judge` の応答 */
 export type JudgeResult = {
   judgement_id: string;
@@ -343,8 +382,9 @@ export type ConfirmStockLine =
   | { item_type_id: string; qty: number }
   | { category: string; name: string; attrs?: Record<string, unknown> | null; qty: number };
 
-/** 確定の一覧。stock はコンテナ直下の本数をぴったりこれにする (載っていない品目は 0 本)。 */
-export type ConfirmFinal = { stock: ConfirmStockLine[]; assets: string[] };
+/** 確定の一覧。stock はコンテナ直下の本数をぴったりこれにする (載っていない品目は 0 本)。
+ * container を付けるとコンテナ自体の種別・名前も書き換わる (「撮影して登録」の新規コンテナ用)。 */
+export type ConfirmFinal = { stock: ConfirmStockLine[]; assets: string[]; container?: { kind: string; name?: string } };
 
 /** `POST /api/judgements/:id/confirm` の応答 (確定後のコンテナ直下) */
 export type ConfirmResult = {
