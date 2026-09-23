@@ -1063,6 +1063,125 @@ describe("コンテナ判定と確定", () => {
     assert.equal((await confirm(r3.body.judgement_id, { stock: [], assets: [], container: { kind: "" } })).status, 400);
   });
 
+  test("確定の new_assets: 個体を登録してこのコンテナに入れ、品目は個体管理で作る", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    gemini.container = { stock: [], assets: [] };
+    const r = await judge(box.body.id);
+    const jid = r.body.judgement_id;
+    const ok = await confirm(jid, {
+      stock: [],
+      assets: [],
+      new_assets: [{ category: "device", name: " N-変換アダプタ ", maker: "N-Apple", model: "N-MD820", serial: " N-S1 " }],
+    });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const got = sql(
+      `SELECT a.id, a.maker, a.model, a.serial, a.status, t.category, t.name, t.tracking
+       FROM assets a JOIN item_types t ON t.id = a.item_type_id WHERE a.container_id = '${box.body.id}'`,
+    );
+    assert.equal(got.length, 1);
+    assert.deepEqual({ ...got[0], id: undefined }, {
+      id: undefined, maker: "N-Apple", model: "N-MD820", serial: "N-S1", status: "in_stock",
+      category: "device", name: "N-変換アダプタ", tracking: "individual",
+    });
+    assert.deepEqual(ok.body.assets.map((a) => a.id), [got[0].id]);
+    const fin = JSON.parse(sql(`SELECT final_json FROM ai_judgements WHERE id = '${jid}'`)[0].final_json);
+    assert.equal(fin.new_assets.length, 1);
+    assert.equal(fin.new_assets[0].id, got[0].id, "final_json に振った個体 ID ごと残る");
+    assert.equal(fin.new_assets[0].name, "N-変換アダプタ");
+    assert.deepEqual(sql(`SELECT kind, note, to_id, from_id, actor FROM movements WHERE asset_id = '${got[0].id}'`), [
+      { kind: "asset_move", note: "registered", to_id: box.body.id, from_id: null, actor: EMAIL },
+    ]);
+  });
+
+  test("確定の new_assets: 同じ (category, name) の 2 台は品目 1 つ・既存の個体管理の品目には付く", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const known = await post("/api/item-types", { category: "device", name: "N-KNOWN", tracking: "individual" });
+    gemini.container = { stock: [], assets: [] };
+    const r = await judge(box.body.id);
+    const ok = await confirm(r.body.judgement_id, {
+      stock: [],
+      assets: [],
+      new_assets: [
+        { category: "device", name: "N-TWIN", maker: "N-M", model: "N-T", serial: "N-T1" },
+        { category: "Device", name: "n-twin", maker: "N-M", model: "N-T", serial: "N-T2" },
+        { category: "device", name: "n-known", maker: null, model: null, serial: null },
+      ],
+    });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const types = sql(`SELECT id, tracking FROM item_types WHERE lower(name) = 'n-twin'`);
+    assert.equal(types.length, 1, "品目は 1 つ");
+    assert.equal(types[0].tracking, "individual");
+    assert.deepEqual(
+      sql(`SELECT serial, item_type_id FROM assets WHERE container_id = '${box.body.id}' ORDER BY serial`),
+      [
+        { serial: null, item_type_id: known.body.id },
+        { serial: "N-T1", item_type_id: types[0].id },
+        { serial: "N-T2", item_type_id: types[0].id },
+      ],
+    );
+    assert.equal(sql(`SELECT COUNT(*) AS n FROM item_types WHERE lower(name) = 'n-known'`)[0].n, 1);
+  });
+
+  test("確定の new_assets の拒否: 既存個体と同じ (maker, model, serial) は 409、数量品目・stock の名前行と同名は 422。何も変わらない", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const cable = await post("/api/item-types", { category: "cable", name: "N-QTY", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: cable.body.id, delta: 3 });
+    const existing = (await post("/api/assets", { maker: "N-X", model: "N-Y", serial: "N-Z" })).body.asset;
+    gemini.container = { stock: [], assets: [] };
+    const r = await judge(box.body.id);
+    const jid = r.body.judgement_id;
+    const snapshot = () => ({
+      stock: stockOf(box.body.id),
+      assets: sql(`SELECT id, container_id FROM assets ORDER BY id`),
+      types: sql(`SELECT COUNT(*) AS n FROM item_types`)[0].n,
+      moves: sql(`SELECT COUNT(*) AS n FROM movements`)[0].n,
+      final: sql(`SELECT final_json FROM ai_judgements WHERE id = '${jid}'`)[0].final_json,
+    });
+    const before = snapshot();
+    const keep = [{ item_type_id: cable.body.id, qty: 5 }];
+
+    const dup = await confirm(jid, {
+      stock: keep,
+      assets: [],
+      new_assets: [{ category: "device", name: "N-NEW1", maker: "N-X", model: "N-Y", serial: "N-Z" }],
+    });
+    assert.equal(dup.status, 409, JSON.stringify(dup.body));
+    assert.match(dup.body.error, /same maker, model and serial/);
+    assert.deepEqual(snapshot(), before);
+    assert.equal(sql(`SELECT container_id FROM assets WHERE id = '${existing.id}'`)[0].container_id, null);
+
+    for (const final of [
+      // 数量管理の既存品目と同じ (category, name)
+      { stock: keep, assets: [], new_assets: [{ category: "CABLE", name: "n-qty", maker: null, model: null, serial: "N-Q1" }] },
+      // stock の名前だけの行と同じ (category, name)
+      {
+        stock: [...keep, { category: "device", name: "N-CLASH", qty: 1 }],
+        assets: [],
+        new_assets: [{ category: "Device", name: "n-clash", maker: null, model: null, serial: "N-C1" }],
+      },
+      // 同じ確定の中で (maker, model, serial) が重なる
+      {
+        stock: keep,
+        assets: [],
+        new_assets: [
+          { category: "device", name: "N-D", maker: "N-A", model: "N-B", serial: "N-C" },
+          { category: "device", name: "N-D", maker: "N-A", model: "N-B", serial: "N-C" },
+        ],
+      },
+    ]) {
+      const res = await confirm(jid, final);
+      assert.equal(res.status, 422, JSON.stringify({ final, body: res.body }));
+      assert.deepEqual(snapshot(), before, JSON.stringify(final));
+    }
+    assert.equal(sql(`SELECT COUNT(*) AS n FROM item_types WHERE lower(name) IN ('n-clash', 'n-d', 'n-new1')`)[0].n, 0);
+
+    // 形の不正は 400
+    for (const na of [[{ category: "device", name: " " }], [{ name: "X" }], "x"]) {
+      assert.equal((await confirm(jid, { stock: keep, assets: [], new_assets: na })).status, 400, JSON.stringify(na));
+    }
+    assert.deepEqual(snapshot(), before);
+  });
+
   test("無いコンテナの判定は 404 で Gemini を呼ばない・未認証は 401", async () => {
     const before = gemini.requests.length;
     assert.equal((await judge("ZZZZZZ")).status, 404);

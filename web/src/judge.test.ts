@@ -1,6 +1,15 @@
 import { describe, expect, test } from "vitest";
 import type { Asset, JudgeResult } from "./api";
-import { buildFinal, initialRows, proposalContainer, zeroedItems, type EditState, type StockRow } from "./judge";
+import {
+  assetToStockRow,
+  buildFinal,
+  initialRows,
+  proposalContainer,
+  zeroedItems,
+  type AssetRow,
+  type EditState,
+  type StockRow,
+} from "./judge";
 
 function asset(id: string, container_id: string | null = null): Asset {
   return {
@@ -201,6 +210,8 @@ describe("buildFinal", () => {
       match: "choose" as const,
       candidates: [],
       pick,
+      mode: "skip" as const,
+      draft: { category: "", name: "", maker: "", model: "", serial: "" },
     });
     const ok = buildFinal({ stock: [], assets: [a("1", "A1"), a("2", null), a("3", "A2")] });
     expect(ok).toEqual({ ok: true, final: { stock: [], assets: ["A1", "A2"] } });
@@ -220,4 +231,110 @@ describe("buildFinal", () => {
     const noContainer = buildFinal({ stock: [], assets: [] });
     expect(noContainer.ok && noContainer.final).not.toHaveProperty("container");
   });
+
+  test("new_assets: 「個体として登録」の行だけを trim・空は null にして載せる", () => {
+    const f = buildFinal({
+      stock: [],
+      assets: [
+        newRow("1", { mode: "register", draft: { category: " device ", name: " 変換アダプタ ", maker: " Apple ", model: "", serial: " S1 " } }),
+        newRow("2", { mode: "skip" }),
+        // match が new 以外の行は mode を見ない
+        { ...newRow("3", { mode: "register" }), match: "choose", pick: "A1" },
+      ],
+    });
+    expect(f).toEqual({
+      ok: true,
+      final: {
+        stock: [],
+        assets: ["A1"],
+        new_assets: [{ category: "device", name: "変換アダプタ", maker: "Apple", model: null, serial: "S1" }],
+      },
+    });
+  });
+
+  test("new_assets: 名前・種類が空なら止める", () => {
+    const d = { category: "device", name: "  ", maker: "", model: "", serial: "" };
+    expect(buildFinal({ stock: [], assets: [newRow("1", { mode: "register", draft: d })] })).toEqual({
+      ok: false,
+      error: "個体の名前を入れてください",
+    });
+    expect(
+      buildFinal({ stock: [], assets: [newRow("1", { mode: "register", draft: { ...d, name: "X", category: " " } })] }),
+    ).toEqual({ ok: false, error: "個体の名前を入れてください" });
+  });
+
+  test("new_assets: 同じ (maker, model, serial) の 2 行は止める。どれかが空なら重複にしない", () => {
+    const d = { category: "device", name: "X", maker: "M", model: "X1", serial: "S1" };
+    const dup = buildFinal({
+      stock: [],
+      assets: [newRow("1", { mode: "register", draft: d }), newRow("2", { mode: "register", draft: { ...d, serial: " S1 " } })],
+    });
+    expect(dup).toEqual({ ok: false, error: "同じ個体を 2 行で登録しようとしています" });
+    const noSerial = buildFinal({
+      stock: [],
+      assets: [
+        newRow("1", { mode: "register", draft: { ...d, serial: "" } }),
+        newRow("2", { mode: "register", draft: { ...d, serial: "" } }),
+      ],
+    });
+    expect(noSerial.ok && noSerial.final.new_assets).toEqual([
+      { category: "device", name: "X", maker: "M", model: "X1", serial: null },
+      { category: "device", name: "X", maker: "M", model: "X1", serial: null },
+    ]);
+  });
+
+  test("new_assets: 登録の行が無ければ final にキー自体が無い", () => {
+    const f = buildFinal({ stock: [], assets: [newRow("1", { mode: "skip" })] });
+    expect(f).toEqual({ ok: true, final: { stock: [], assets: [] } });
+    expect(f.ok && f.final).not.toHaveProperty("new_assets");
+  });
 });
+
+describe("未登録の個体", () => {
+  test("initialRows: 既定は確定しない、入力の初期値は AI の値 (名前は型番、無ければ説明)", () => {
+    const s = initialRows(
+      result({
+        assets: [
+          { maker: null, model: null, serial: null, description: "白いLightning変換アダプタ", confidence: 0.4, match: "new", candidates: [] },
+          { maker: "Apple", model: "A1", serial: "S", description: "d", confidence: 0.8, match: "new", candidates: [] },
+        ],
+      }),
+    );
+    expect(s.assets.map((a) => [a.mode, a.draft])).toEqual([
+      ["skip", { category: "device", name: "白いLightning変換アダプタ", maker: "", model: "", serial: "" }],
+      ["skip", { category: "device", name: "A1", maker: "Apple", model: "A1", serial: "S" }],
+    ]);
+  });
+
+  test("assetToStockRow: 手で足した行と同じ形 (other・1 本・今 0 本)", () => {
+    expect(assetToStockRow(newRow("1", { model: null, description: "白いLightning変換アダプタ", confidence: 0.4 }), "n9")).toEqual({
+      key: "n9",
+      itemTypeId: null,
+      category: "other",
+      name: "白いLightning変換アダプタ",
+      attrs: null,
+      qty: 1,
+      currentQty: 0,
+      confidence: 0.4,
+      source: "added",
+    });
+    expect(assetToStockRow(newRow("1", { model: "MD820", description: "x" }), "n1").name).toBe("MD820");
+  });
+});
+
+function newRow(key: string, over: Partial<AssetRow> = {}): AssetRow {
+  return {
+    key,
+    maker: null,
+    model: null,
+    serial: null,
+    description: "",
+    confidence: 0.5,
+    match: "new",
+    candidates: [],
+    pick: null,
+    mode: "skip",
+    draft: { category: "device", name: "X", maker: "", model: "", serial: "" },
+    ...over,
+  };
+}

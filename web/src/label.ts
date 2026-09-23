@@ -23,7 +23,7 @@ export type CreateAssetOptions = {
 const DEFAULT_CATEGORY = "device";
 
 /** 前後の空白を落とし、空なら undefined。 */
-function clean(v: string): string | undefined {
+export function clean(v: string): string | undefined {
   const t = v.trim();
   return t ? t : undefined;
 }

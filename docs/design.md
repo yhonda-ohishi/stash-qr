@@ -174,7 +174,7 @@ CREATE TABLE photos (
 - `DELETE /api/containers/:id` 空の時のみ
 - `POST /api/containers/:id/stock` `{ item_type_id, delta, note }` 本数の出し入れ
 - `POST /api/containers/:id/judge` コンテナ写真 → 提案（数量物＋個体候補）。Flickr 保存を並行
-- `POST /api/judgements/:id/confirm` `{ final }` stock と assets に反映し、final_json を保存
+- `POST /api/judgements/:id/confirm` `{ final }` stock と assets に反映し、final_json を保存。`final.new_assets`（`{ category, name, maker, model, serial }` の配列、任意）は未登録の個体を同じ batch でこのコンテナに登録し、品目は category × name で探して無ければ個体管理で作る（既存個体と同じ (maker, model, serial) は 409、数量管理の同名品目・stock の名前行と同名は 422）
 - `POST /api/assets/judge-label` 製品ラベル写真 → メーカー・型番・シリアルの提案。Flickr 保存を並行
 - `POST /api/assets` 個体作成（ラベル判定の確定）。`item_type_id` が無ければ `category`（既定 device）× `name`（既定 = 型番）で品目を探し、無ければ作る。`judgement_id` があれば final_json を保存、`photo_id` があれば写真を個体に結び付ける。同じ (maker, model, serial) は 409
 - `GET /api/assets/:id` / `PATCH /api/assets/:id`（状態変更・メモ）
