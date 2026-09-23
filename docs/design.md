@@ -137,7 +137,7 @@ CREATE TABLE photos (
 - マシンタグで逆引きできるようにする：`<ns>:container=<id>`、`<ns>:asset=<id>`、`<ns>:kind=<kind>`。
   `<ns>` は `stashqr`（Flickr の namespace は英数字と `_` のみで `-` 不可のため、リポジトリ名から `-` を抜いた）。
 - アップロード失敗時も判定・確定は止めない。photos に「送信待ち」（flickr_photo_id が NULL）で残し、画像を持っているスマホが送り直す（R2 に一時保存はしない）。
-- 資格情報は cf-flickr-cam-worker と同じ Flickr App・アカウントの値を、Cloudflare Secrets Store から束ねる（GCP は経由しない）。
+- 資格情報は Worker secret（`FLICKR_CONSUMER_KEY` / `FLICKR_CONSUMER_SECRET` / `FLICKR_ACCESS_TOKEN_JSON`）。GCP も Secrets Store も経由しない。
 - 画像を表示するときは Worker が Flickr から取得して返す（プロキシ）。
 
 ## 認証（Cloudflare Access）

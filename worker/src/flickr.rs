@@ -8,8 +8,8 @@
 //! - 静的画像 URL はクライアントに返さない (先行実装は 302 で渡していた)。
 //!   取得は Worker が行い、中身だけを返す (`photos.rs`)
 //!
-//! 資格情報は cf-flickr-cam-worker と同じ CF Secrets Store の secret を束ねて使う
-//! (同じ Flickr App・同じアカウント)。値は Worker の外に出ない。
+//! 資格情報は Worker secret (`wrangler secret put`) の
+//! `FLICKR_CONSUMER_KEY` / `FLICKR_CONSUMER_SECRET` / `FLICKR_ACCESS_TOKEN_JSON`。
 
 use serde::Deserialize;
 use worker::wasm_bindgen::JsValue;
@@ -40,11 +40,11 @@ struct AccessToken {
     secret: String,
 }
 
-async fn secret(env: &Env, binding: &str) -> Option<String> {
-    match env.secret_store(binding) {
-        Ok(s) => s.get().await.ok().flatten().filter(|v| !v.is_empty()),
-        Err(_) => None,
-    }
+fn secret(env: &Env, name: &str) -> Option<String> {
+    env.secret(name)
+        .ok()
+        .map(|s| s.to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// 送り先の上書き (結合テストの偽 Flickr 用)。https 以外はループバックだけ許す。
@@ -59,9 +59,9 @@ fn endpoint(env: &Env, key: &str, default: &str) -> String {
 impl Flickr {
     /// 資格情報が 1 つでも欠けていれば `None` (= アップロードは送信待ちのまま残る)。
     pub async fn from_env(env: &Env) -> Option<Self> {
-        let consumer_key = secret(env, "FLICKR_CONSUMER_KEY").await?;
-        let consumer_secret = secret(env, "FLICKR_CONSUMER_SECRET").await?;
-        let token_json = secret(env, "FLICKR_ACCESS_TOKEN_JSON").await?;
+        let consumer_key = secret(env, "FLICKR_CONSUMER_KEY")?;
+        let consumer_secret = secret(env, "FLICKR_CONSUMER_SECRET")?;
+        let token_json = secret(env, "FLICKR_ACCESS_TOKEN_JSON")?;
         let AccessToken { token, secret } = serde_json::from_str(&token_json).ok()?;
         Some(Self {
             consumer_key,

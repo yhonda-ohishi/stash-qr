@@ -26,7 +26,6 @@ let flickrSrv;
 const devs = [];
 
 // 偽の Flickr。受け取ったアップロードと、署名の検証結果をここに残す。
-const STORE_ID = "bd7bc91a3e5f4111add4acf6cb4b8733";
 const FLICKR = { consumerKey: "ck-test", consumerSecret: "cs-test", token: "at-test", tokenSecret: "ats-test" };
 const flickr = { uploads: [], photos: new Map(), failUploads: false, nextId: 9000, badSignatures: 0 };
 
@@ -156,25 +155,16 @@ before(async () => {
     cwd: CWD,
     stdio: "ignore",
   });
-  // wrangler.toml が束ねる Secrets Store の secret を、ローカルに偽の値で作る
-  const secrets = {
-    "rust-flickr-consumer-key": FLICKR.consumerKey,
-    "rust-flickr-consumer-secret": FLICKR.consumerSecret,
-    FLICKR_ACCESS_TOKEN_JSON: JSON.stringify({ token: FLICKR.token, secret: FLICKR.tokenSecret, userNsid: "1@N00", username: "t" }),
-  };
-  for (const [name, value] of Object.entries(secrets)) {
-    execFileSync(
-      WRANGLER,
-      ["secrets-store", "secret", "create", STORE_ID, "--name", name, "--value", value, "--scopes", "workers", "--persist-to", state],
-      { cwd: CWD, stdio: "ignore" },
-    );
-  }
   base = await startDev({
     ACCESS_ISSUER: issuer,
     ACCESS_AUD: AUD,
     FLICKR_UPLOAD_URL: `${flickrOrigin}/services/upload/`,
     FLICKR_REST_URL: `${flickrOrigin}/services/rest/`,
     FLICKR_STATIC_BASE: `${flickrOrigin}/static`,
+    // 本番では Worker secret。ローカルでは --var で同じ名前の文字列として渡す
+    FLICKR_CONSUMER_KEY: FLICKR.consumerKey,
+    FLICKR_CONSUMER_SECRET: FLICKR.consumerSecret,
+    FLICKR_ACCESS_TOKEN_JSON: JSON.stringify({ token: FLICKR.token, secret: FLICKR.tokenSecret, userNsid: "1@N00", username: "t" }),
   });
   // wrangler.toml の [vars] には本番の値が入っているので、空で上書きして未設定を作る
   bareBase = await startDev({ ACCESS_ISSUER: "", ACCESS_AUD: "" });
