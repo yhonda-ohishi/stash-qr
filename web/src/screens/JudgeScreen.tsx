@@ -69,14 +69,24 @@ export function JudgeScreen({ params }: ScreenProps) {
     }
   };
 
+  if (load.error) {
+    const e = load.error;
+    return (
+      <main>
+        <p class="error">{e instanceof ApiError && e.status === 404 ? "コンテナが見つかりません" : errorText(e)}</p>
+        <a href="/app">ホームへ</a>
+      </main>
+    );
+  }
   const d = load.data;
+  if (!d) return <main>読み込み中…</main>;
+
   return (
     <main>
-      {d && <Crumbs items={d.breadcrumb} />}
+      <Crumbs items={d.breadcrumb} />
       <h1>
-        撮影して判定 <small>{d ? crumbLabel(d.container) : id}</small>
+        撮影して判定 <small>{crumbLabel(d.container)}</small>
       </h1>
-      {load.error != null && <p class="error">{errorText(load.error)}</p>}
 
       {phase.s === "shoot" && (
         <>
