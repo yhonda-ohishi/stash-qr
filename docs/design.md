@@ -136,7 +136,8 @@ CREATE TABLE photos (
 - OAuth 1.0a の署名は Worker 内で行う。
 - マシンタグで逆引きできるようにする：`<ns>:container=<id>`、`<ns>:asset=<id>`、`<ns>:kind=<kind>`。
   `<ns>` は `stashqr`（Flickr の namespace は英数字と `_` のみで `-` 不可のため、リポジトリ名から `-` を抜いた）。
-- アップロード失敗時も判定・確定は止めない。photos に記録できなかった分は再送キューで後追い。
+- アップロード失敗時も判定・確定は止めない。photos に「送信待ち」（flickr_photo_id が NULL）で残し、画像を持っているスマホが送り直す（R2 に一時保存はしない）。
+- 資格情報は cf-flickr-cam-worker と同じ Flickr App・アカウントの値を、Cloudflare Secrets Store から束ねる（GCP は経由しない）。
 - 画像を表示するときは Worker が Flickr から取得して返す（プロキシ）。
 
 ## 認証（Cloudflare Access）
@@ -174,7 +175,10 @@ CREATE TABLE photos (
 - `POST /api/assets/:id/move` `{ container_id }`
 - `GET /api/item-types?q=` / `POST /api/item-types`
 - `GET /api/search?q=` 品目名・型番・シリアルで検索し、場所をフルパスで返す
-- `GET /api/photos/:id` Flickr 画像のプロキシ
+- `POST /api/photos?kind=&container_id=&asset_id=&taken_at=` 本文は画像そのもの。Flickr へ非公開で保存。失敗しても 201（status=pending）
+- `PUT /api/photos/:id/image` 送信待ちの写真を送り直す（送信済みなら何もしない）
+- `GET /api/photos?status=pending` 送信待ちの一覧（スマホは Flickr に入るまで画像を消さず、ここを見て送り直す）
+- `GET /api/photos/:id?size=t|m|z|c|b` Flickr 画像のプロキシ（中身だけ返す。静的 URL・Flickr の ID は返さない）
 - `GET /c/:id` コンテナ QR の飛び先（簡易 HTML）
 - `GET /a/:id` 個体 QR の飛び先（簡易 HTML、自前 QR を貼った個体用）
 

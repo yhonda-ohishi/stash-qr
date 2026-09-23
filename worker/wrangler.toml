@@ -28,3 +28,21 @@ migrations_dir = "migrations"
 # Access アプリ "stash-qr"。Google ログインで本人の email だけ許可。
 ACCESS_ISSUER = "https://mtamaramu.cloudflareaccess.com"
 ACCESS_AUD = "dc7fb2c8c7360e23af4c0154f3500978718ac19e341f8ee7ee1fdabcfa2f586c"
+
+# Flickr の資格情報。cf-flickr-cam-worker と同じ Flickr App・同じアカウントの値を、
+# 同じ Cloudflare Secrets Store から束ねる (値は Cloudflare の外に出ない)。
+# FLICKR_ACCESS_TOKEN_JSON は {"token","secret","userNsid","username"} の JSON。
+[[secrets_store_secrets]]
+binding = "FLICKR_CONSUMER_KEY"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "rust-flickr-consumer-key"
+
+[[secrets_store_secrets]]
+binding = "FLICKR_CONSUMER_SECRET"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "rust-flickr-consumer-secret"
+
+[[secrets_store_secrets]]
+binding = "FLICKR_ACCESS_TOKEN_JSON"
+store_id = "bd7bc91a3e5f4111add4acf6cb4b8733"
+secret_name = "FLICKR_ACCESS_TOKEN_JSON"
