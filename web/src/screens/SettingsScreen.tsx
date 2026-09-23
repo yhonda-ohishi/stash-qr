@@ -1,4 +1,5 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
+import { installState, onInstallChange, promptInstall } from "../install";
 import { buildTestLabel, certUrl, getPrinterIp, looksLikeHost, sendToPrinter, setPrinterIp } from "../print";
 import { errorText } from "../ui";
 
@@ -9,6 +10,9 @@ export function SettingsScreen() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [install, setInstall] = useState(installState());
+
+  useEffect(() => onInstallChange(() => setInstall(installState())), []);
 
   const valid = looksLikeHost(ip);
 
@@ -37,6 +41,13 @@ export function SettingsScreen() {
   return (
     <main>
       <h1>設定</h1>
+
+      <h2>アプリ</h2>
+      {install === "available" && <button onClick={() => promptInstall()}>アプリとしてインストール</button>}
+      {install === "installed" && <p class="muted">インストール済み</p>}
+      {install === "unavailable" && (
+        <p class="muted">ブラウザのメニューの「アプリをインストール」から入れられます</p>
+      )}
 
       <h2>ラベルプリンタ (TM-L100)</h2>
       <form onSubmit={save} class="row">
