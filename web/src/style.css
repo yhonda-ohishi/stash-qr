@@ -144,3 +144,60 @@ input.qty {
   background: #fffbeb;
   border-radius: 8px;
 }
+/* 撮影→判定→確定 (JudgeScreen) */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+label.button.shoot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  min-height: 64px;
+  margin: 12px 0;
+}
+.judge-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.choices {
+  display: flex;
+  flex-direction: column;
+}
+.choice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 44px;
+}
+.choice input {
+  min-height: 0;
+  width: 20px;
+  height: 20px;
+}
+button.link {
+  border: none;
+  background: none;
+  color: var(--accent);
+  padding: 6px 0;
+  text-align: left;
+}
+.picker {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.current-assets summary {
+  color: var(--accent);
+  padding: 8px 0;
+}
+.warn {
+  padding: 8px 12px;
+  background: #fffbeb;
+  border-radius: 8px;
+}
