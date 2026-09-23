@@ -437,7 +437,7 @@ describe("photos (Flickr)", () => {
 
   async function image(id, size) {
     const q = size ? `?size=${size}` : "";
-    return fetch(`${base}/api/photos/${id}${q}`, { headers: { "cf-access-jwt-assertion": jwt() } });
+    return fetchFresh(`${base}/api/photos/${id}${q}`, { headers: { "cf-access-jwt-assertion": jwt() } });
   }
 
   test("非公開・マシンタグ付きで Flickr に上がり、署名が正しい", async () => {

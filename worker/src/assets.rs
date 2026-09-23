@@ -17,7 +17,7 @@ use crate::db::{self, NOW, opt_text, text};
 use crate::gemini;
 use crate::id::{ROW_ID_LEN, new_id, normalize_container_id};
 use crate::judgements::{Judged, judge_and_store, judgement_state};
-use crate::photos::NewPhoto;
+use crate::photos::{self, NewPhoto};
 use crate::{Ctx, error, json, read_object};
 
 const STATUSES: [&str; 4] = ["in_stock", "lent", "broken", "disposed"];
@@ -37,8 +37,7 @@ pub(crate) struct Asset {
     pub updated_at: String,
 }
 
-pub(crate) const SELECT: &str =
-    "SELECT a.id, a.item_type_id, t.name AS item_name, a.container_id, a.maker,
+const SELECT: &str = "SELECT a.id, a.item_type_id, t.name AS item_name, a.container_id, a.maker,
                              a.model, a.serial, a.status, a.memo, a.created_at, a.updated_at
                       FROM assets a JOIN item_types t ON t.id = a.item_type_id";
 

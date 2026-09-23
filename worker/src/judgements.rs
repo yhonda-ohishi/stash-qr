@@ -11,11 +11,12 @@
 
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use worker::*;
 
 use crate::assets::{self, Asset};
+use crate::containers;
 use crate::db::{self, NOW, opt_text, text};
 use crate::gemini::{self, Gemini};
 use crate::id::{ROW_ID_LEN, new_id, normalize_container_id};
@@ -122,29 +123,6 @@ pub(crate) async fn judgement_state(
         Some(r) if r.final_json.is_some() => Some((409, "judgement is already confirmed".into())),
         Some(_) => None,
     })
-}
-
-// ---------------------------------------------------------------------------
-// コンテナ直下の中身 (判定と確定の応答に載せる)
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize, Serialize)]
-struct StockLine {
-    item_type_id: String,
-    category: String,
-    name: String,
-    qty: i64,
-}
-
-const STOCK_SQL: &str = "SELECT s.item_type_id, t.category, t.name, s.qty
-                         FROM stock s JOIN item_types t ON t.id = s.item_type_id
-                         WHERE s.container_id = ?1 ORDER BY t.category, t.name";
-
-fn assets_sql() -> String {
-    format!(
-        "{} WHERE a.container_id = ?1 ORDER BY t.name, a.id",
-        assets::SELECT
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -277,12 +255,9 @@ pub async fn judge_container(mut req: Request, ctx: Ctx) -> Result<Response> {
         asset_out.push(l);
     }
 
-    let r = d1
-        .batch(vec![
-            d1.prepare(STOCK_SQL).bind(&[text(&id)])?,
-            d1.prepare(assets_sql()).bind(&[text(&id)])?,
-        ])
-        .await?;
+    let Some(view) = containers::load_view(&d1, &id).await? else {
+        return error(404, "container not found");
+    };
     json(
         200,
         &json!({
@@ -292,10 +267,7 @@ pub async fn judge_container(mut req: Request, ctx: Ctx) -> Result<Response> {
             "proposal": j.proposal,
             "stock": stock,
             "assets": asset_out,
-            "current": {
-                "stock": r[0].results::<StockLine>()?,
-                "assets": r[1].results::<Asset>()?,
-            },
+            "current": { "stock": view.stock, "assets": view.assets },
             "photo": j.photo,
         }),
     )
@@ -529,12 +501,6 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
                AND container_id IS NOT {CONTAINER} AND {GUARD}"
         ))
         .bind(&binds[..5])?;
-    let cur_stock = d1
-        .prepare(STOCK_SQL.replace("?1", CONTAINER))
-        .bind(&binds[..1])?;
-    let cur_assets = d1
-        .prepare(assets_sql().replace("?1", CONTAINER))
-        .bind(&binds[..1])?;
     let r = d1
         .batch(vec![
             save,
@@ -544,8 +510,6 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
             prune,
             asset_moves,
             place,
-            cur_stock,
-            cur_assets,
         ])
         .await?;
 
@@ -560,13 +524,20 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
             .first::<C>(None)
             .await?
             .map(|c| c.container_id);
+        // 書き込みは上の batch で済んでいる。結果は GET /api/containers/:id と同じ取得部で読み直す。
+        let Some(view) = (match &container_id {
+            Some(c) => containers::load_view(&d1, c).await?,
+            None => None,
+        }) else {
+            return error(404, "container not found");
+        };
         return json(
             200,
             &json!({
                 "judgement_id": jid,
                 "container_id": container_id,
-                "stock": r[7].results::<StockLine>()?,
-                "assets": r[8].results::<Asset>()?,
+                "stock": view.stock,
+                "assets": view.assets,
             }),
         );
     }
