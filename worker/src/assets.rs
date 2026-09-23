@@ -346,13 +346,16 @@ pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
 // GET /api/assets/:id
 // ---------------------------------------------------------------------------
 
-pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
-    let Some(id) = ctx.param("id").cloned() else {
-        return error(404, "asset not found");
-    };
-    let d1 = db::db(&ctx)?;
-    let Some(asset) = load(&d1, &id).await? else {
-        return error(404, "asset not found");
+/// `GET /api/assets/:id` と `GET /a/:id` (HTML) が共用する取得部。
+pub(crate) struct AssetView {
+    pub(crate) asset: Asset,
+    pub(crate) breadcrumb: Vec<Crumb>,
+    pub(crate) photos: Vec<photos::PhotoRef>,
+}
+
+pub(crate) async fn load_view(d1: &D1Database, id: &str) -> Result<Option<AssetView>> {
+    let Some(asset) = load(d1, id).await? else {
+        return Ok(None);
     };
     let breadcrumb = match &asset.container_id {
         Some(c) => d1
@@ -363,24 +366,25 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
             .results::<Crumb>()?,
         None => vec![],
     };
-    #[derive(Deserialize, Serialize)]
-    struct PhotoRef {
-        id: String,
-        kind: String,
-        taken_at: String,
-    }
-    let photos = d1
-        .prepare(
-            "SELECT id, kind, taken_at FROM photos
-             WHERE asset_id = ?1 AND flickr_photo_id IS NOT NULL ORDER BY taken_at DESC LIMIT 20",
-        )
-        .bind(&[text(&id)])?
-        .all()
-        .await?
-        .results::<PhotoRef>()?;
+    let photos = photos::list_for(d1, photos::Owner::Asset(id)).await?;
+    Ok(Some(AssetView {
+        asset,
+        breadcrumb,
+        photos,
+    }))
+}
+
+pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
+    let Some(id) = ctx.param("id").cloned() else {
+        return error(404, "asset not found");
+    };
+    let d1 = db::db(&ctx)?;
+    let Some(view) = load_view(&d1, &id).await? else {
+        return error(404, "asset not found");
+    };
     json(
         200,
-        &json!({ "asset": asset, "breadcrumb": breadcrumb, "photos": photos }),
+        &json!({ "asset": view.asset, "breadcrumb": view.breadcrumb, "photos": view.photos }),
     )
 }
 

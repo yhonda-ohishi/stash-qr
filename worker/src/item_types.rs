@@ -76,7 +76,7 @@ pub async fn list(req: Request, ctx: Ctx) -> Result<Response> {
     json(200, &serde_json::json!({ "item_types": items }))
 }
 
-fn escape_like(s: &str) -> String {
+pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")

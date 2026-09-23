@@ -206,6 +206,14 @@ async function call(method, path, body, { token = jwt(), url = base } = {}) {
 
 const post = (p, b, opts) => call("POST", p, b, opts);
 
+// HTML ページ (/c/:id, /a/:id) は JSON ではないので、本文をそのまま返す。
+async function getHtml(path, { token = jwt(), url = base } = {}) {
+  const headers = {};
+  if (token !== null) headers["cf-access-jwt-assertion"] = token;
+  const res = await fetch(`${url}${path}`, { method: "GET", headers });
+  return { status: res.status, contentType: res.headers.get("content-type"), text: await res.text() };
+}
+
 // API に出していない表 (movements) を確かめるため、ローカル D1 を直接読む。
 function sql(query) {
   const out = execFileSync(
@@ -613,5 +621,97 @@ describe("assets (ラベル判定・個体)", () => {
     gemini.fail = false;
     assert.equal(r.status, 502);
     assert.equal(r.body.photo.status, "uploaded");
+  });
+});
+
+describe("閲覧ページ (/c, /a) と検索", () => {
+  test("/c/:id: パンくず・子・在庫・個体、名前は HTML エスケープされる", async () => {
+    const room = await post("/api/containers", { kind: "room", name: "<script>alert(1)</script>" });
+    const box = await post("/api/containers", { kind: "box", name: "箱", parent_id: room.body.id });
+    const it = await post("/api/item-types", { category: "cable", name: "USB-ViewTest", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: it.body.id, delta: 3 });
+    const asset = (
+      await post("/api/assets", { model: "ViewTestModel", serial: "ViewTestSerial", container_id: box.body.id })
+    ).body.asset;
+
+    const page = await getHtml(`/c/${box.body.id}`);
+    assert.equal(page.status, 200);
+    assert.match(page.contentType, /text\/html; charset=utf-8/);
+    assert.ok(page.text.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "コンテナ名がエスケープされる");
+    assert.ok(!page.text.includes("<script>alert(1)</script>"), "生の <script> は出さない");
+    assert.ok(page.text.includes(`href="/c/${room.body.id}"`), "パンくずが親へリンクする");
+    assert.ok(page.text.includes("USB-ViewTest"), "在庫の品目名が出る");
+    assert.ok(page.text.includes(`href="/a/${asset.id}"`), "個体が /a/:id へリンクする");
+
+    assert.equal((await getHtml("/c/ZZZZZZ")).status, 404);
+  });
+
+  test("/a/:id: 200・404・持ち出し中の表示", async () => {
+    const asset = (await post("/api/assets", { model: "SoloViewModel", serial: "SoloViewSerial" })).body.asset;
+    const page = await getHtml(`/a/${asset.id}`);
+    assert.equal(page.status, 200);
+    assert.match(page.contentType, /text\/html; charset=utf-8/);
+    assert.ok(page.text.includes("SoloViewModel"));
+    assert.ok(page.text.includes("持ち出し中"), "container_id が無ければ持ち出し中と出す");
+
+    const box = await post("/api/containers", { kind: "box" });
+    const placed = (await post("/api/assets", { model: "PlacedViewModel", container_id: box.body.id })).body.asset;
+    assert.ok((await getHtml(`/a/${placed.id}`)).text.includes(`href="/c/${box.body.id}"`));
+
+    assert.equal((await getHtml("/a/nope")).status, 404);
+  });
+
+  test("検索: 品目名・型番・シリアルのヒットとパンくずのフルパス", async () => {
+    const room = await post("/api/containers", { kind: "room", name: "検索部屋" });
+    const box = await post("/api/containers", { kind: "box", name: "検索箱", parent_id: room.body.id });
+    const it = await post("/api/item-types", { category: "cable", name: "SearchCableName", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: it.body.id, delta: 5 });
+    const asset = (
+      await post("/api/assets", { model: "SearchModelXYZ", serial: "SearchSerialXYZ", container_id: box.body.id })
+    ).body.asset;
+
+    const byName = await call("GET", "/api/search?q=SearchCableName");
+    assert.equal(byName.status, 200);
+    assert.equal(byName.body.stock.length, 1);
+    assert.equal(byName.body.stock[0].qty, 5);
+    assert.deepEqual(byName.body.stock[0].breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
+
+    const byModel = await call("GET", "/api/search?q=SearchModelXYZ");
+    assert.equal(byModel.body.assets.length, 1);
+    assert.equal(byModel.body.assets[0].id, asset.id);
+    assert.deepEqual(byModel.body.assets[0].breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
+
+    const bySerial = await call("GET", "/api/search?q=SearchSerialXYZ");
+    assert.equal(bySerial.body.assets.length, 1);
+    assert.equal(bySerial.body.assets[0].id, asset.id);
+
+    const taken = await post("/api/assets", { model: "SearchNoContainerModel", serial: "SearchNoContainerSerial" });
+    const noContainer = await call("GET", "/api/search?q=SearchNoContainerModel");
+    assert.equal(noContainer.body.assets.length, 1);
+    assert.equal(noContainer.body.assets[0].id, taken.body.asset.id);
+    assert.deepEqual(noContainer.body.assets[0].breadcrumb, [], "container_id が無ければ breadcrumb は空配列");
+  });
+
+  test("% を含む q が誤ヒットしない", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const exact = await post("/api/item-types", { category: "cable", name: "Percent%Weird", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: exact.body.id, delta: 1 });
+    const decoy = await post("/api/item-types", { category: "cable", name: "PercentXWeird", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: decoy.body.id, delta: 1 });
+
+    const r = await call("GET", `/api/search?q=${encodeURIComponent("Percent%Weird")}`);
+    assert.deepEqual(r.body.stock.map((s) => s.item_type_name), ["Percent%Weird"]);
+  });
+
+  test("空の q は 400、上限は 50 件", async () => {
+    assert.equal((await call("GET", "/api/search?q=")).status, 400);
+    assert.equal((await call("GET", "/api/search?q=%20")).status, 400);
+    assert.equal((await call("GET", "/api/search")).status, 400);
+  });
+
+  test("未認証の /c/:id と /api/search は 401", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    assert.equal((await getHtml(`/c/${box.body.id}`, { token: null })).status, 401);
+    assert.equal((await call("GET", "/api/search?q=x", undefined, { token: null })).status, 401);
   });
 });
