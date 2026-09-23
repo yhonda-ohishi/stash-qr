@@ -1,6 +1,7 @@
 import { ApiError, getAsset, type AssetStatus } from "../api";
 import type { ScreenProps } from "../router";
-import { Crumbs, errorText, Thumbs, useLoad } from "../ui";
+import { assetLabelLines } from "../print";
+import { Crumbs, errorText, PrintButton, Thumbs, useLoad } from "../ui";
 
 export const STATUS_LABEL: Record<AssetStatus, string> = {
   in_stock: "在庫",
@@ -45,7 +46,9 @@ export function AssetScreen({ params }: ScreenProps) {
       <Thumbs photos={d.photos} />
 
       <h2>操作</h2>
-      <div class="actions">{/* 後続の画面 (印刷など) のボタンはここに足す */}</div>
+      <div class="actions">
+        <PrintButton kind="a" id={a.id} lines={assetLabelLines(d)} />
+      </div>
     </main>
   );
 }

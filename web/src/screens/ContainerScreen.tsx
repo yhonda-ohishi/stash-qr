@@ -1,7 +1,8 @@
 import { useState } from "preact/hooks";
 import { ApiError, getContainer, listItemTypes, stockDelta, type ContainerDetail, type ItemType } from "../api";
 import type { ScreenProps } from "../router";
-import { Crumbs, crumbLabel, errorText, Thumbs, useLoad } from "../ui";
+import { containerLabelLines } from "../print";
+import { Crumbs, crumbLabel, errorText, PrintButton, Thumbs, useLoad } from "../ui";
 
 function stockError(e: unknown): string {
   if (e instanceof ApiError && e.status === 409) return "在庫が足りません";
@@ -110,7 +111,7 @@ export function ContainerScreen({ params }: ScreenProps) {
         <a class="button" href={`/app/label?container=${encodeURIComponent(d.container.id)}`}>
           ラベルを撮って個体登録
         </a>
-        {/* 後続の画面 (印刷など) のボタンはここに足す */}
+        <PrintButton kind="c" id={d.container.id} lines={containerLabelLines(d)} />
       </div>
     </main>
   );

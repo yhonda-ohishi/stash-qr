@@ -217,6 +217,7 @@ CREATE TABLE photos (
   スマホごとに最初の 1 回だけ `https://<ip>/` を開いてプリンタの自己署名証明書を通す。2026-09-23 にスマホから印刷できることを確認済み。
   ラベル = QR（`https://stash.mtamaramu.com/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
   プリンタの IP は端末ごとに localStorage に持つ（サーバーには置かない）。
+  実装：`web/src/print.ts`（esc/envelope/送信・ラベル組み立て）、設定画面は `/app/settings`。
 
 ## 進め方（フェーズ）
 

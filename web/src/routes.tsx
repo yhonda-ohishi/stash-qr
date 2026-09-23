@@ -6,6 +6,7 @@ import { Home } from "./screens/Home";
 import { JudgeScreen } from "./screens/JudgeScreen";
 import { LabelScreen } from "./screens/LabelScreen";
 import { MoveScreen } from "./screens/MoveScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
 
 export const routes: Route[] = [
   { pattern: "/", screen: Home },
@@ -15,4 +16,5 @@ export const routes: Route[] = [
   { pattern: "/app/move", screen: MoveScreen },
   { pattern: "/app/c/:id/judge", screen: JudgeScreen },
   { pattern: "/app/label", screen: LabelScreen },
+  { pattern: "/app/settings", screen: SettingsScreen },
 ];
