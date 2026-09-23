@@ -715,3 +715,37 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     assert.equal((await call("GET", "/api/search?q=x", undefined, { token: null })).status, 401);
   });
 });
+
+describe("static assets (PWA)", () => {
+  // web/dist は run_worker_first で常に Worker (Access) を通ってから配られる (worker/wrangler.toml)。
+  // レスポンス本文は HTML/JSON ではなく text/html なので、call() (JSON 前提) ではなく素の fetch を使う。
+  async function getRaw(path, { token = jwt(), url = base } = {}) {
+    const headers = token === null ? {} : { "cf-access-jwt-assertion": token };
+    return fetch(`${url}${path}`, { headers });
+  }
+
+  test("認証ありの GET / は 200 で text/html", async () => {
+    const res = await getRaw("/");
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+  });
+
+  test("認証ありの GET /some/route は index.html (SPA フォールバック)", async () => {
+    const index = await (await getRaw("/")).text();
+    const res = await getRaw("/some/route");
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+    assert.equal(await res.text(), index);
+  });
+
+  test("未認証の GET / と GET /manifest.webmanifest (実在するファイル) は 401", async () => {
+    assert.equal((await getRaw("/", { token: null })).status, 401);
+    assert.equal((await getRaw("/manifest.webmanifest", { token: null })).status, 401);
+  });
+
+  test("GET /api/nope は 404 で JSON", async () => {
+    const res = await call("GET", "/api/nope");
+    assert.equal(res.status, 404);
+    assert.deepEqual(res.body, { error: "not found" });
+  });
+});

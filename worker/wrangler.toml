@@ -14,7 +14,16 @@ preview_urls = true
 routes = [{ pattern = "stash.mtamaramu.com", custom_domain = true }]
 
 [build]
-command = "cargo install -q worker-build@0.8.6 && worker-build --release"
+# subshell (カッコ) で web/ の cd を閉じないと、worker-build が web/ のまま走ってしまう。
+command = "(cd ../web && npm ci && npm run build) && cargo install -q worker-build@0.8.6 && worker-build --release"
+
+# web/dist (Preact/Vite のビルド結果) を静的アセットとして配る。run_worker_first で
+# どのリクエストも先に Worker (auth::authenticate、fail closed) を通す。
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+run_worker_first = true
+not_found_handling = "single-page-application"
 
 # 本番 D1 (apac)。ローカル (wrangler dev / テスト) は --persist-to の先に別に作られる。
 [[d1_databases]]

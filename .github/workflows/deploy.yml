@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - 'worker/**'
+      - 'web/**'
       - '.github/workflows/deploy.yml'
 
 permissions:
@@ -49,7 +50,9 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: worker/package-lock.json
+          cache-dependency-path: |
+            worker/package-lock.json
+            web/package-lock.json
 
       - run: npm ci
 
