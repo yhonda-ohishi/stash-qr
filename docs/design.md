@@ -225,7 +225,7 @@ CREATE TABLE photos (
 - 2 スキャン移動：対象 QR → 移動先 QR（コンテナ・個体共通）
 - 本数の出し入れ：QR → 品目選択 → ±数量
 - 送り直し：Flickr に入るまで画像を IndexedDB に残し、`GET /api/photos?status=pending` を見て `PUT /api/photos/:id/image` で送り直す
-- 印刷：EPSON TM-L100（LAN、例 `192.168.11.239`）にブラウザから ePOS-Print XML を直接 POST する
+- 印刷：EPSON TM-L100（LAN、例 `<プリンタの IP>`）にブラウザから ePOS-Print XML を直接 POST する
   （`https://<ip>/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`。プリンタは `Access-Control-Allow-Origin: *` を返す）。
   スマホごとに最初の 1 回だけ `https://<ip>/` を開いてプリンタの自己署名証明書を通す。2026-09-23 にスマホから印刷できることを確認済み。
   ラベル = QR（`https://stash.mtamaramu.com/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
