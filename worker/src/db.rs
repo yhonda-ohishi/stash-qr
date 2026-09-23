@@ -6,7 +6,7 @@ use worker::*;
 /// SQL 内で現在時刻を埋める式。時刻は Worker ではなく D1 で打つ。
 pub const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
-pub fn db(ctx: &RouteContext<()>) -> Result<D1Database> {
+pub fn db(ctx: &crate::Ctx) -> Result<D1Database> {
     ctx.env.d1("DB")
 }
 

@@ -2,6 +2,11 @@ name = "stash-qr"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-01"
 
+# 入口は stash.mtamaramu.com (Cloudflare Access の後ろ) だけ。workers.dev と
+# preview URL は Access を通らないので閉じる (Worker 側でも JWT を検証するが二重に塞ぐ)。
+workers_dev = false
+preview_urls = false
+
 [build]
 command = "cargo install -q worker-build@0.8.6 && worker-build --release"
 
@@ -12,3 +17,10 @@ binding = "DB"
 database_name = "stash-qr"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
+
+# Cloudflare Access (docs/design.md「未決事項」)。空のままだと全リクエストが 503 (fail closed)。
+# ACCESS_ISSUER = https://<team>.cloudflareaccess.com、ACCESS_AUD = Access アプリの AUD タグ。
+# どちらも秘密ではない (JWT の中にそのまま入っている値)。
+[vars]
+ACCESS_ISSUER = ""
+ACCESS_AUD = ""

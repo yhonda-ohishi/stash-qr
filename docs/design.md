@@ -139,6 +139,17 @@ CREATE TABLE photos (
 - アップロード失敗時も判定・確定は止めない。photos に記録できなかった分は再送キューで後追い。
 - 画像を表示するときは Worker が Flickr から取得して返す（プロキシ）。
 
+## 認証（Cloudflare Access）
+
+- 入口は `stash.mtamaramu.com` だけ。`workers_dev` と preview URL は閉じる（Access を通らないため）。
+- Worker は `Cf-Access-Jwt-Assertion` を信用せず、毎回 team の JWKS で RS256 署名・`iss`・`aud`・`exp`/`nbf` を検証する（`worker/src/auth.rs`）。
+  失敗は 401、`ACCESS_ISSUER` / `ACCESS_AUD` が空なら全リクエスト 503（fail closed）。
+- 持ち主（ブラウザは `email`、Android のサービストークンは `common_name`）を `movements.actor` に残す。
+- 設定手順（本番 deploy 前に 1 回）:
+  1. Zero Trust → Access → Applications で `stash.mtamaramu.com` の Self-hosted アプリを作る
+  2. ポリシー: 本人の email を Allow、Android 用のサービストークンを Service Auth
+  3. アプリの AUD タグと `https://<team>.cloudflareaccess.com` を `worker/wrangler.toml` の `[vars]` に書く（秘密ではない）
+
 ## API
 
 - `POST /api/containers` 作成（parent_id 任意）

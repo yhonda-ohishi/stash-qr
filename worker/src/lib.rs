@@ -3,6 +3,7 @@
 use serde::Serialize;
 use worker::*;
 
+mod auth;
 mod containers;
 mod db;
 mod id;
@@ -10,7 +11,23 @@ mod item_types;
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    let res = Router::new()
+    // 全ルートが Access の後ろ。設定が無ければ開けずに閉じる (fail closed)。
+    let Some(cfg) = auth::Config::from_env(&env) else {
+        console_error!("ACCESS_ISSUER / ACCESS_AUD is not configured");
+        return error(503, "auth not configured");
+    };
+    let actor = match auth::authenticate(&req, &cfg).await {
+        Ok(Ok(a)) => a,
+        Ok(Err(e)) => {
+            console_warn!("access denied: {e:?}");
+            return error(401, "unauthorized");
+        }
+        Err(e) => {
+            console_error!("auth failed: {e}");
+            return error(502, "could not verify access token");
+        }
+    };
+    let res = Router::with_data(Actor(actor))
         .post_async("/api/containers", containers::create)
         .get_async("/api/containers/:id", containers::get)
         .patch_async("/api/containers/:id", containers::patch)
@@ -29,6 +46,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         }
     }
 }
+
+/// Access で確かめた持ち主 (利用者の email かサービストークンの common_name)。
+/// movements.actor に残す。
+pub(crate) struct Actor(pub String);
+
+pub(crate) type Ctx = RouteContext<Actor>;
 
 /// エラー応答は常に `{ "error": "..." }`。
 pub(crate) fn error(status: u16, msg: &str) -> Result<Response> {
