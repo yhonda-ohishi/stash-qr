@@ -4,7 +4,7 @@
 // 実行: npm test (先に cargo test、続けてこれ)。
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
@@ -21,6 +21,7 @@ let base; // Access 設定あり
 let bareBase; // Access 設定なし (fail closed の確認用)
 let issuer;
 let state;
+let d1Raw; // sql() が叩く local explorer の D1 API (before で決める)
 let jwks;
 let flickrSrv;
 const devs = [];
@@ -134,7 +135,7 @@ async function startDev(vars) {
   const dev = spawn(
     WRANGLER,
     ["dev", "--local", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", state, ...varArgs],
-    { cwd: CWD, detached: true, stdio: "ignore" },
+    { cwd: CWD, detached: true, stdio: "ignore", env: { ...process.env, X_LOCAL_EXPLORER: "true" } },
   );
   devs.push(dev);
   for (let i = 0; i < 600; i++) {
@@ -182,6 +183,7 @@ before(async () => {
     GEMINI_ENDPOINT: `${flickrOrigin}/v1beta`,
     GEMINI_API_KEY: GEMINI_KEY,
   });
+  d1Raw = await localExplorerD1(base);
   // wrangler.toml の [vars] には本番の値が入っているので、空で上書きして未設定を作る
   bareBase = await startDev({ ACCESS_ISSUER: "", ACCESS_AUD: "" });
 });
@@ -193,8 +195,8 @@ after(() => {
   if (state) rmSync(state, { recursive: true, force: true });
 });
 
-// sql() は 1 回ごとに wrangler を起こす (約 1 秒)。続けて呼ぶと keep-alive の接続が
-// サーバー側で閉じられ、次の fetch が使い回したソケットで "other side closed" になる。
+// テストの間が空くと keep-alive の接続がサーバー側で閉じられ、次の fetch が
+// 使い回したソケットで "other side closed" になる。
 // 応答を 1 バイトも受け取らずに切れたときだけ、新しい接続で 1 回投げ直す。
 async function fetchFresh(url, init) {
   try {
@@ -228,14 +230,48 @@ async function getHtml(path, { token = jwt(), url = base } = {}) {
   return { status: res.status, contentType: res.headers.get("content-type"), text: await res.text() };
 }
 
-// API に出していない表 (movements) を確かめるため、ローカル D1 を直接読む。
+// API に出していない表 (movements など) を確かめるため、ローカル D1 を直接読む。
+// 別プロセスの `wrangler d1 execute --local` は自前の workerd で同じ SQLite (WAL) を開き、
+// wrangler dev の書き込みと重なると待たずに SQLITE_BUSY ("internal error") で落ちた (実測)。
+// そこで wrangler dev 自身の workerd が出す local explorer の D1 API に SQL を流し、
+// Worker と同じ D1 (同じ接続) で読む。Worker は通らない (本番のコードに入口は足さない)。
+// local explorer は wrangler の実験的機能 (X_LOCAL_EXPLORER) なので、package.json で
+// 固定した版 (4.136.3) に依存する。使えなければ d1 execute に戻さず、ここで失敗させる。
+async function localExplorerD1(url) {
+  const api = `${url}/cdn-cgi/local/explorer/api/d1/database`;
+  const res = await fetch(api);
+  const text = await res.text();
+  let dbs;
+  try {
+    dbs = JSON.parse(text).result;
+  } catch {}
+  if (!res.ok || !Array.isArray(dbs) || dbs.length !== 1 || !dbs[0].uuid) {
+    throw new Error(`local explorer の D1 API が使えない (wrangler の版を確認): GET ${api} → ${res.status} ${text.slice(0, 500)}`);
+  }
+  return `${api}/${dbs[0].uuid}/raw`;
+}
+
+// 呼び出し側を同期のまま保つため、fetch は子プロセスの node で投げて待つ。
+const SQL_CLIENT = `
+const [url, sql] = process.argv.slice(1);
+const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sql }) });
+process.stdout.write(JSON.stringify({ status: res.status, body: await res.text() }));
+`;
+
 function sql(query) {
-  const out = execFileSync(
-    WRANGLER,
-    ["d1", "execute", "DB", "--local", "--persist-to", state, "--json", "--command", query],
-    { cwd: CWD, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-  );
-  return JSON.parse(out)[0].results;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", SQL_CLIENT, d1Raw, query], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`sql() の子プロセスが失敗: ${query}\n${r.stderr}`);
+  const { status, body } = JSON.parse(r.stdout);
+  let out;
+  try {
+    out = JSON.parse(body).result?.[0];
+  } catch {}
+  if (status !== 200 || !out?.success) throw new Error(`sql() 失敗 (HTTP ${status}): ${query}\n${body}`);
+  const { columns, rows } = out.results ?? {};
+  if (!Array.isArray(columns) || !Array.isArray(rows)) {
+    throw new Error(`local explorer の D1 API の応答形が違う (wrangler の版を確認): ${body.slice(0, 500)}`);
+  }
+  return rows.map((row) => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
 }
 
 describe("containers", () => {
