@@ -3,6 +3,7 @@ import type { Route } from "./router";
 import { AssetScreen } from "./screens/AssetScreen";
 import { ContainerScreen } from "./screens/ContainerScreen";
 import { Home } from "./screens/Home";
+import { JudgeScreen } from "./screens/JudgeScreen";
 import { MoveScreen } from "./screens/MoveScreen";
 
 export const routes: Route[] = [
@@ -11,4 +12,5 @@ export const routes: Route[] = [
   { pattern: "/app/c/:id", screen: ContainerScreen },
   { pattern: "/app/a/:id", screen: AssetScreen },
   { pattern: "/app/move", screen: MoveScreen },
+  { pattern: "/app/c/:id/judge", screen: JudgeScreen },
 ];

@@ -244,3 +244,70 @@ export function photoUrl(id: string, size: "t" | "m" | "z" | "c" | "b" = "t"): s
 // ---------------------------------------------------------------------------
 // 後続が足す: judge / confirm / judge-label / assets create はここから下へ
 // ---------------------------------------------------------------------------
+
+// --- コンテナ写真の判定・確定 (judgements.rs) ---
+
+/** 数量物の品目の大分類 (gemini.rs `container_schema` の enum)。 */
+export const STOCK_CATEGORIES = ["cable", "power", "battery", "other"] as const;
+
+/** 判定の数量物 1 行。`item_type_id` は登録済みの数量品目と category・name が一致したとき。 */
+export type JudgedStock = {
+  category: string;
+  name: string;
+  qty: number;
+  attrs: Record<string, unknown> | null;
+  confidence: number;
+  item_type_id: string | null;
+};
+
+/** 既存の個体との照合。high = シリアル一致、medium = 型番一致 1 件、choose = 複数、new = 無し。 */
+export type AssetMatch = "high" | "medium" | "choose" | "new";
+
+/** 判定の個体 1 行 */
+export type JudgedAsset = {
+  maker: string | null;
+  model: string | null;
+  serial: string | null;
+  description: string;
+  confidence: number;
+  match: AssetMatch;
+  candidates: Asset[];
+};
+
+/** `POST /api/containers/:id/judge` の応答 */
+export type JudgeResult = {
+  judgement_id: string;
+  model: string;
+  container_id: string;
+  proposal: unknown;
+  stock: JudgedStock[];
+  assets: JudgedAsset[];
+  current: { stock: StockLine[]; assets: AssetLine[] };
+  photo: PhotoView;
+};
+
+/** 確定の数量物 1 行。既存品目は ID、新しい品目は category・name (無ければ worker が作る)。 */
+export type ConfirmStockLine =
+  | { item_type_id: string; qty: number }
+  | { category: string; name: string; attrs?: Record<string, unknown> | null; qty: number };
+
+/** 確定の一覧。stock はコンテナ直下の本数をぴったりこれにする (載っていない品目は 0 本)。 */
+export type ConfirmFinal = { stock: ConfirmStockLine[]; assets: string[] };
+
+/** `POST /api/judgements/:id/confirm` の応答 (確定後のコンテナ直下) */
+export type ConfirmResult = {
+  judgement_id: string;
+  container_id: string;
+  stock: StockLine[];
+  assets: AssetLine[];
+};
+
+/** 本文は画像。AI が失敗したら 502 で、body.photo に保存済みの写真が入る。 */
+export function judgeContainer(id: string, blob: Blob): Promise<JudgeResult> {
+  return request("POST", `/api/containers/${seg(id)}/judge`, blob, "image/jpeg");
+}
+
+/** 400 形式 / 404 / 409 確定済み / 422 未知の品目・個体など。 */
+export function confirmJudgement(id: string, final: ConfirmFinal): Promise<ConfirmResult> {
+  return request("POST", `/api/judgements/${seg(id)}/confirm`, { final });
+}
