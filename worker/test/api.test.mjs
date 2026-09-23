@@ -887,6 +887,9 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     const byModel = await call("GET", "/api/search?q=SearchModelXYZ");
     assert.equal(byModel.body.assets.length, 1);
     assert.equal(byModel.body.assets[0].id, asset.id);
+    assert.equal(byModel.body.assets[0].item_type_id, asset.item_type_id);
+    assert.ok(byModel.body.assets[0].category, "個体にも品目の category が付く");
+    assert.ok(byModel.body.assets[0].item_type_name, "個体にも品目名が付く");
     assert.deepEqual(byModel.body.assets[0].breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
 
     const bySerial = await call("GET", "/api/search?q=SearchSerialXYZ");
@@ -911,10 +914,45 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     assert.deepEqual(r.body.stock.map((s) => s.item_type_name), ["Percent%Weird"]);
   });
 
-  test("空の q は 400、上限は 50 件", async () => {
-    assert.equal((await call("GET", "/api/search?q=")).status, 400);
-    assert.equal((await call("GET", "/api/search?q=%20")).status, 400);
-    assert.equal((await call("GET", "/api/search")).status, 400);
+  test("q 無し・空: 全品目一覧 (本数品目・個体すべて、品目情報・パンくず付き、truncated false)", async () => {
+    const room = await post("/api/containers", { kind: "room", name: "全件部屋" });
+    const box = await post("/api/containers", { kind: "box", name: "全件箱", parent_id: room.body.id });
+    const it = await post("/api/item-types", { category: "cable", name: "AllListCableName", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: it.body.id, delta: 3 });
+    const asset = (
+      await post("/api/assets", { model: "AllListModel", serial: "AllListSerial", container_id: box.body.id })
+    ).body.asset;
+
+    for (const q of ["", undefined]) {
+      const path = q === undefined ? "/api/search" : "/api/search?q=";
+      const r = await call("GET", path);
+      assert.equal(r.status, 200);
+      assert.equal(r.body.truncated, false);
+
+      const stockHit = r.body.stock.find((s) => s.item_type_id === it.body.id);
+      assert.ok(stockHit, "作った本数品目が全件一覧に入る");
+      assert.equal(stockHit.qty, 3);
+      assert.deepEqual(stockHit.breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
+
+      const assetHit = r.body.assets.find((a) => a.id === asset.id);
+      assert.ok(assetHit, "作った個体が全件一覧に入る");
+      assert.equal(assetHit.item_type_id, asset.item_type_id);
+      assert.ok(assetHit.category, "個体に品目の category が付く");
+      assert.ok(assetHit.item_type_name, "個体に品目名が付く");
+      assert.deepEqual(assetHit.breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
+    }
+  });
+
+  test("廃棄済みの個体は検索 (q あり・なし) に出ない", async () => {
+    const asset = (await post("/api/assets", { model: "DisposedSearchModel", serial: "DisposedSearchSerial" })).body
+      .asset;
+    assert.equal((await call("PATCH", `/api/assets/${asset.id}`, { status: "disposed" })).status, 200);
+
+    const all = await call("GET", "/api/search");
+    assert.ok(!all.body.assets.some((a) => a.id === asset.id), "全件一覧に廃棄済みは出ない");
+
+    const byModel = await call("GET", "/api/search?q=DisposedSearchModel");
+    assert.ok(!byModel.body.assets.some((a) => a.id === asset.id), "q ありでも廃棄済みは出ない");
   });
 
   test("未認証の /c/:id と /api/search は 401", async () => {

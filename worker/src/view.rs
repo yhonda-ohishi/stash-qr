@@ -14,7 +14,7 @@ use crate::db::{self, text};
 use crate::id::normalize_container_id;
 use crate::item_types::escape_like;
 use crate::photos::{self, Owner};
-use crate::{Ctx, assets, error, json};
+use crate::{Ctx, assets, json};
 
 /// `&` `<` `>` `"` `'` の 5 文字だけをエスケープする。DB 由来の文字列を
 /// HTML に埋め込む前に必ずこれを通す (品目名・コンテナ名などは利用者入力)。
@@ -248,6 +248,9 @@ struct StockHit {
 #[derive(Deserialize)]
 struct AssetHit {
     id: String,
+    item_type_id: String,
+    category: String,
+    item_type_name: String,
     maker: Option<String>,
     model: Option<String>,
     serial: Option<String>,
@@ -255,38 +258,75 @@ struct AssetHit {
 }
 
 const SEARCH_LIMIT: &str = "50";
+/// q が空 (=全品目一覧) のときの上限。stock・assets それぞれこの件数まで。
+const ALL_LIMIT: i64 = 1000;
 
 pub async fn search(req: Request, ctx: Ctx) -> Result<Response> {
     let q = req.query::<SearchQuery>()?.q.unwrap_or_default();
     let q = q.trim();
-    if q.is_empty() {
-        return error(400, "q is required");
-    }
-    let pattern = format!("%{}%", escape_like(q));
     let d1 = db::db(&ctx)?;
 
-    let stock_rows = d1
-        .prepare(format!(
-            "SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty
-             FROM stock s JOIN item_types t ON t.id = s.item_type_id
-             WHERE t.name LIKE ?1 ESCAPE '\\'
-             ORDER BY t.name, s.container_id LIMIT {SEARCH_LIMIT}"
-        ))
-        .bind(&[text(&pattern)])?
-        .all()
-        .await?
-        .results::<StockHit>()?;
+    let (stock_rows, asset_rows, truncated) = if q.is_empty() {
+        let limit = ALL_LIMIT + 1;
+        let stock_rows = d1
+            .prepare(format!(
+                "SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty
+                 FROM stock s JOIN item_types t ON t.id = s.item_type_id
+                 ORDER BY t.category, t.name, s.container_id LIMIT {limit}"
+            ))
+            .all()
+            .await?
+            .results::<StockHit>()?;
 
-    let asset_rows = d1
-        .prepare(format!(
-            "SELECT id, maker, model, serial, container_id FROM assets
-             WHERE model LIKE ?1 ESCAPE '\\' OR serial LIKE ?1 ESCAPE '\\'
-             ORDER BY updated_at DESC LIMIT {SEARCH_LIMIT}"
-        ))
-        .bind(&[text(&pattern)])?
-        .all()
-        .await?
-        .results::<AssetHit>()?;
+        let asset_rows = d1
+            .prepare(format!(
+                "SELECT a.id, a.item_type_id, t.category, t.name AS item_type_name,
+                        a.maker, a.model, a.serial, a.container_id
+                 FROM assets a JOIN item_types t ON t.id = a.item_type_id
+                 WHERE a.status != 'disposed'
+                 ORDER BY t.category, t.name, a.updated_at DESC LIMIT {limit}"
+            ))
+            .all()
+            .await?
+            .results::<AssetHit>()?;
+
+        let mut stock_rows = stock_rows;
+        let mut asset_rows = asset_rows;
+        let truncated = stock_rows.len() as i64 > ALL_LIMIT || asset_rows.len() as i64 > ALL_LIMIT;
+        stock_rows.truncate(ALL_LIMIT as usize);
+        asset_rows.truncate(ALL_LIMIT as usize);
+        (stock_rows, asset_rows, truncated)
+    } else {
+        let pattern = format!("%{}%", escape_like(q));
+
+        let stock_rows = d1
+            .prepare(format!(
+                "SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty
+                 FROM stock s JOIN item_types t ON t.id = s.item_type_id
+                 WHERE t.name LIKE ?1 ESCAPE '\\'
+                 ORDER BY t.name, s.container_id LIMIT {SEARCH_LIMIT}"
+            ))
+            .bind(&[text(&pattern)])?
+            .all()
+            .await?
+            .results::<StockHit>()?;
+
+        let asset_rows = d1
+            .prepare(format!(
+                "SELECT a.id, a.item_type_id, t.category, t.name AS item_type_name,
+                        a.maker, a.model, a.serial, a.container_id
+                 FROM assets a JOIN item_types t ON t.id = a.item_type_id
+                 WHERE a.status != 'disposed'
+                   AND (a.model LIKE ?1 ESCAPE '\\' OR a.serial LIKE ?1 ESCAPE '\\')
+                 ORDER BY a.updated_at DESC LIMIT {SEARCH_LIMIT}"
+            ))
+            .bind(&[text(&pattern)])?
+            .all()
+            .await?
+            .results::<AssetHit>()?;
+
+        (stock_rows, asset_rows, false)
+    };
 
     // ヒットしたコンテナごとに 1 回だけパンくずを引く (同じコンテナが複数回
     // 出てくることがあるため)。1 件ずつ往復せず、1 回の d1.batch にまとめる。
@@ -336,6 +376,9 @@ pub async fn search(req: Request, ctx: Ctx) -> Result<Response> {
                 .unwrap_or_default();
             serde_json::json!({
                 "id": r.id,
+                "item_type_id": r.item_type_id,
+                "category": r.category,
+                "item_type_name": r.item_type_name,
                 "maker": r.maker,
                 "model": r.model,
                 "serial": r.serial,
@@ -347,6 +390,6 @@ pub async fn search(req: Request, ctx: Ctx) -> Result<Response> {
 
     json(
         200,
-        &serde_json::json!({ "stock": stock, "assets": assets }),
+        &serde_json::json!({ "stock": stock, "assets": assets, "truncated": truncated }),
     )
 }
