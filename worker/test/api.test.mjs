@@ -444,7 +444,7 @@ describe("empty (中身を空にする)", () => {
 
     const r = await post(`/api/containers/${box.body.id}/empty`, { confirm: true });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(r.body, { stock_rows: 2, assets: 1 });
+    assert.deepEqual(r.body, { stock_rows: 2, assets: 1, photos: 0 });
 
     assert.deepEqual((await call("GET", `/api/containers/${box.body.id}`)).body.stock, [], "本数は空");
     assert.deepEqual(sql(`SELECT container_id FROM assets WHERE id = '${asset.id}'`), [{ container_id: null }], "個体は持ち出し中");
@@ -465,13 +465,38 @@ describe("empty (中身を空にする)", () => {
     assert.equal((await call("DELETE", `/api/containers/${box.body.id}`)).status, 204);
   });
 
-  test("空のコンテナへは冪等に 200 {0,0}、無い id は 404", async () => {
+  test("空のコンテナへは冪等に 200 {0,0,0}、無い id は 404", async () => {
     const box = await post("/api/containers", { kind: "box" });
     assert.deepEqual((await post(`/api/containers/${box.body.id}/empty`, { confirm: true })).body, {
       stock_rows: 0,
       assets: 0,
+      photos: 0,
     });
     assert.equal((await post(`/api/containers/ZZZZZZ/empty`, { confirm: true })).status, 404);
+  });
+
+  test("写真の紐付けも外す (写真自体・judgement_id は残る)", async () => {
+    const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
+    const box = await post("/api/containers", { kind: "box" });
+    const up = await fetchFresh(`${base}/api/photos?kind=container&container_id=${box.body.id}`, {
+      method: "POST",
+      headers: { "content-type": "image/jpeg", "cf-access-jwt-assertion": jwt() },
+      body: JPEG,
+    });
+    const uploaded = await up.json();
+    assert.equal(up.status, 201, JSON.stringify(uploaded));
+    const photoId = uploaded.photo.id;
+
+    const r = await post(`/api/containers/${box.body.id}/empty`, { confirm: true });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body, { stock_rows: 0, assets: 0, photos: 1 });
+
+    assert.deepEqual((await call("GET", `/api/containers/${box.body.id}`)).body.photos, [], "コンテナの写真一覧は空");
+    assert.deepEqual(
+      sql(`SELECT container_id, judgement_id FROM photos WHERE id = '${photoId}'`),
+      [{ container_id: null, judgement_id: null }],
+      "写真の行自体は残る",
+    );
   });
 
   test("子コンテナがあれば empty の後も削除は 409 のまま", async () => {

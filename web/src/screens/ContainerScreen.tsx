@@ -338,7 +338,9 @@ function EmptyContents({
 
   const run = async () => {
     if (
-      !confirm(`本数を 0 にし、個体 ${assetCount} 台を持ち出し中 (場所なし) にします。よいですか？`)
+      !confirm(
+        `本数を 0 にし、個体 ${assetCount} 台を持ち出し中 (場所なし) にします。写真もこのコンテナから外します (写真自体は消えません)。よいですか？`,
+      )
     )
       return;
     setBusy(true);
@@ -346,7 +348,9 @@ function EmptyContents({
     setResult(null);
     try {
       const r = await emptyContainer(container.id);
-      setResult(`本数 ${r.stock_rows} 行を 0 にし、個体 ${r.assets} 台を持ち出し中にしました`);
+      setResult(
+        `本数 ${r.stock_rows} 行を 0 にし、個体 ${r.assets} 台を持ち出し中にし、写真 ${r.photos} 枚をこのコンテナから外しました`,
+      );
       onDone();
     } catch (err) {
       setError(errorText(err));
