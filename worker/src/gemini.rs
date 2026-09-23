@@ -145,9 +145,102 @@ pub fn label_schema() -> Value {
     })
 }
 
+// ---------------------------------------------------------------------------
+// コンテナの中身
+// ---------------------------------------------------------------------------
+
+pub const CONTAINER_PROMPT: &str = "\
+この写真は袋・箱・棚など (コンテナ) の中身です。写っている物を一覧にしてください。
+- stock: 本数で数える物 (ケーブル・電源アダプタ・電池など)。同じ物は 1 行にまとめ、qty に本数を入れる
+  - category: cable / power / battery / other のどれか
+  - name: ケーブルは両端の端子を「端子1-端子2」の形で書く (例: A-C, C-C, A-micro-B, A-Lightning, 3.5mm-3.5mm)
+  - attrs: end1 / end2 は端子 (A / C / micro-B / mini-B / Lightning / 3.5mm / DC など)、length は長さ (例: 1m)、
+    color は色、braided は編み込みなら true。分からない項目は null
+  - 判断できない物は category を other、name を「不明」にする
+  - confidence: その行の確からしさ (0〜1)
+- assets: 型番やシリアルで 1 台ずつ管理する機器 (プリンタ・ルーター・モバイルバッテリーなど)
+  - maker / model / serial: 本体に読める文字だけ。読めなければ推測せず null
+  - description: 見た目の短い説明 (例: 黒い小型のレシートプリンタ)
+  - confidence: その行の確からしさ (0〜1)
+ケーブルは 1 本ずつ束ねて両端を同じ辺に揃えてあります。端子の形を見て数えてください。";
+
+/// 指示文に登録済みの数量品目を添える。同じ物に同じ名前を付けさせ、表記揺れで品目が増えるのを防ぐ。
+pub fn container_prompt(known: &[(String, String)]) -> String {
+    if known.is_empty() {
+        return CONTAINER_PROMPT.to_string();
+    }
+    let mut p = format!(
+        "{CONTAINER_PROMPT}\n登録済みの品目です。同じ物にはこの category と name をそのまま使ってください:\n"
+    );
+    for (category, name) in known {
+        p.push_str(&format!("- {category} / {name}\n"));
+    }
+    p
+}
+
+pub fn container_schema() -> Value {
+    let s = json!({ "type": "STRING", "nullable": true });
+    json!({
+        "type": "OBJECT",
+        "properties": {
+            "stock": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "category": { "type": "STRING", "enum": ["cable", "power", "battery", "other"] },
+                        "name": { "type": "STRING" },
+                        "qty": { "type": "INTEGER" },
+                        "attrs": {
+                            "type": "OBJECT",
+                            "nullable": true,
+                            "properties": {
+                                "end1": s, "end2": s, "length": s, "color": s,
+                                "braided": { "type": "BOOLEAN", "nullable": true }
+                            }
+                        },
+                        "confidence": { "type": "NUMBER" }
+                    },
+                    "required": ["category", "name", "qty", "confidence"]
+                }
+            },
+            "assets": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "maker": s, "model": s, "serial": s,
+                        "description": { "type": "STRING" },
+                        "confidence": { "type": "NUMBER" }
+                    },
+                    "required": ["description", "confidence"]
+                }
+            }
+        },
+        "required": ["stock", "assets"]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_prompt_lists_known_item_types() {
+        assert_eq!(container_prompt(&[]), CONTAINER_PROMPT);
+        let p = container_prompt(&[("cable".into(), "A-C".into())]);
+        assert!(p.starts_with(CONTAINER_PROMPT));
+        assert!(p.ends_with("- cable / A-C\n"));
+        let s = container_schema();
+        assert_eq!(
+            s["properties"]["stock"]["items"]["properties"]["qty"]["type"],
+            "INTEGER"
+        );
+        assert_eq!(
+            s["properties"]["assets"]["items"]["properties"]["serial"]["nullable"],
+            true
+        );
+    }
 
     #[test]
     fn request_body_carries_image_prompt_and_schema() {

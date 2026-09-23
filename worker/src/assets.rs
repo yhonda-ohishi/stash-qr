@@ -14,8 +14,9 @@ use worker::*;
 
 use crate::containers::{Crumb, breadcrumb_sql};
 use crate::db::{self, NOW, opt_text, text};
-use crate::gemini::{self, Gemini};
+use crate::gemini;
 use crate::id::{ROW_ID_LEN, new_id, normalize_container_id};
+use crate::judgements::{Judged, judge_and_store, judgement_state};
 use crate::photos::{self, NewPhoto};
 use crate::{Ctx, error, json, read_object};
 
@@ -48,7 +49,7 @@ async fn load(d1: &D1Database, id: &str) -> Result<Option<Asset>> {
 }
 
 /// 前後の空白を落とし、空なら `None`。ラベルの値は大文字小文字を保つ。
-fn clean(v: Option<&Value>) -> Option<String> {
+pub(crate) fn clean(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -95,45 +96,30 @@ pub(crate) async fn find_matches(
 // ---------------------------------------------------------------------------
 
 pub async fn judge_label(mut req: Request, ctx: Ctx) -> Result<Response> {
-    let Some(ai) = Gemini::from_env(&ctx.env) else {
-        return error(503, "GEMINI_API_KEY / GEMINI_MODEL is not configured");
-    };
-    let (bytes, ct) = match photos::read_image(&mut req).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let d1 = db::db(&ctx)?;
     let meta = NewPhoto {
         kind: "label",
         container_id: None,
         asset_id: None,
         taken_at: None,
     };
-    // 判定を Flickr のアップロード待ちにしない (docs/design.md「Flickr 連携」)。
-    let (proposal, photo) = futures_util::future::join(
-        ai.judge(&bytes, &ct, gemini::LABEL_PROMPT, &gemini::label_schema()),
-        photos::store(&ctx.env, &d1, &meta, &bytes, &ct),
+    let Judged {
+        judgement_id,
+        model,
+        proposal,
+        photo,
+    } = match judge_and_store(
+        &mut req,
+        &ctx,
+        gemini::LABEL_PROMPT,
+        &gemini::label_schema(),
+        meta,
     )
-    .await;
-    let photo = photo?;
-    let proposal = match proposal {
-        Ok(p) => p,
-        Err(msg) => {
-            console_error!("label judge failed: {msg}");
-            // 写真は残っているので、撮り直さずに手入力で登録できる。
-            return json(502, &json!({ "error": "AI judge failed", "photo": photo }));
-        }
+    .await?
+    {
+        Ok(j) => j,
+        Err(r) => return r,
     };
-
-    let judgement_id = new_id(ROW_ID_LEN);
-    d1.prepare(format!(
-        "INSERT INTO ai_judgements (id, kind, at, model, proposal_json) VALUES (?1, 'label', {NOW}, ?2, ?3)"
-    ))
-    .bind(&[text(&judgement_id), text(&ai.model), text(&proposal.to_string())])?
-    .run()
-    .await?;
-    photos::link_judgement(&d1, &photo.id, &judgement_id).await?;
-
+    let d1 = db::db(&ctx)?;
     let matches = find_matches(
         &d1,
         clean(proposal.get("model")).as_deref(),
@@ -144,7 +130,7 @@ pub async fn judge_label(mut req: Request, ctx: Ctx) -> Result<Response> {
         200,
         &json!({
             "judgement_id": judgement_id,
-            "model": ai.model,
+            "model": model,
             "proposal": proposal,
             "matches": matches,
             "photo": photo,
@@ -191,27 +177,10 @@ pub async fn create(mut req: Request, ctx: Ctx) -> Result<Response> {
     {
         return error(404, "photo not found");
     }
-    if let Some(j) = &judgement_id {
-        #[derive(Deserialize)]
-        struct J {
-            kind: String,
-            final_json: Option<String>,
-        }
-        let row = d1
-            .prepare("SELECT kind, final_json FROM ai_judgements WHERE id = ?1")
-            .bind(&[text(j)])?
-            .first::<J>(None)
-            .await?;
-        match row {
-            None => return error(404, "judgement not found"),
-            Some(r) if r.kind != "label" => {
-                return error(422, "judgement is not a label judgement");
-            }
-            Some(r) if r.final_json.is_some() => {
-                return error(409, "judgement is already confirmed");
-            }
-            Some(_) => {}
-        }
+    if let Some(j) = &judgement_id
+        && let Some((status, msg)) = judgement_state(&d1, j, "label").await?
+    {
+        return error(status, &msg);
     }
 
     // 品目: 指定が無ければ「category (既定 device) × 名前 (既定 = 型番)」で探し、無ければ作る。

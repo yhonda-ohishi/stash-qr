@@ -11,6 +11,7 @@ mod flickr;
 mod gemini;
 mod id;
 mod item_types;
+mod judgements;
 mod oauth1;
 mod photos;
 mod view;
@@ -40,6 +41,8 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .delete_async("/api/containers/:id", containers::delete)
         .post_async("/api/containers/:id/move", containers::move_to)
         .post_async("/api/containers/:id/stock", containers::stock_delta)
+        .post_async("/api/containers/:id/judge", judgements::judge_container)
+        .post_async("/api/judgements/:id/confirm", judgements::confirm)
         .get_async("/api/item-types", item_types::list)
         .post_async("/api/item-types", item_types::create)
         .post_async("/api/assets/judge-label", assets::judge_label)
