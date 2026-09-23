@@ -11,6 +11,8 @@ export const PRINTER_IP_KEY = "stash-qr:printer-ip";
 const MAX_LINES = 3;
 /** ラベル 1 行の文字数の上限 (実機で見た目を確かめて調整する)。 */
 const LINE_MAX_CHARS = 20;
+/** ラベル下の余白 (用紙送りの行数)。実機の見た目で調整する。 */
+const BOTTOM_FEED_LINES = 4;
 
 export function getPrinterIp(): string {
   try {
@@ -135,7 +137,7 @@ export function buildLabel({ kind, id, lines }: LabelInput): string {
     `<text dw="true" dh="true">${esc(id)}&#10;</text>` +
     '<text dw="false" dh="false"/>' +
     body +
-    '<feed line="2"/><cut type="feed"/>'
+    `<feed line="${BOTTOM_FEED_LINES}"/><cut type="feed"/>`
   );
 }
 
