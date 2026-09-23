@@ -675,6 +675,15 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     assert.equal((await getHtml("/a/nope")).status, 404);
   });
 
+  test("/c/:id と /a/:id: アプリ (PWA) で開くリンク /app/c/:id・/app/a/:id", async () => {
+    const box = await post("/api/containers", { kind: "box", name: "アプリリンク箱" });
+    const asset = (await post("/api/assets", { model: "AppLinkModel", serial: "AppLinkSerial" })).body.asset;
+    assert.ok((await getHtml(`/c/${box.body.id}`)).text.includes(`href="/app/c/${box.body.id}"`));
+    // 小文字で開いても正規化した ID でリンクする
+    assert.ok((await getHtml(`/c/${box.body.id.toLowerCase()}`)).text.includes(`href="/app/c/${box.body.id}"`));
+    assert.ok((await getHtml(`/a/${asset.id}`)).text.includes(`href="/app/a/${asset.id}"`));
+  });
+
   test("検索: 品目名・型番・シリアルのヒットとパンくずのフルパス", async () => {
     const room = await post("/api/containers", { kind: "room", name: "検索部屋" });
     const box = await post("/api/containers", { kind: "box", name: "検索箱", parent_id: room.body.id });

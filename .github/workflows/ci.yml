@@ -54,6 +54,11 @@ jobs:
             worker/package-lock.json
             web/package-lock.json
 
+      # PWA の純粋関数 (ルーター・QR の読み取り・API の失敗・画像の寸法) の単体テスト
+      - name: web test (vitest)
+        working-directory: web
+        run: npm ci && npm test
+
       - name: rustfmt
         run: cargo fmt --check
 
