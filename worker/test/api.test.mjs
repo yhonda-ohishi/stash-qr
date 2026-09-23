@@ -1182,6 +1182,91 @@ describe("コンテナ判定と確定", () => {
     assert.deepEqual(snapshot(), before);
   });
 
+  test("未確定: 判定して確定しないと list・get に印と再開用の判定が出て、確定で消える。親の get に未確定の子", async () => {
+    const room = await post("/api/containers", { kind: "room", name: "U-部屋" });
+    const bag = await post("/api/containers", { kind: "bag", parent_id: room.body.id });
+    const listed = async () => (await call("GET", `/api/containers?parent=${room.body.id}`)).body.containers.find((c) => c.id === bag.body.id);
+    const got = async (id) => (await call("GET", `/api/containers/${id}`)).body;
+
+    gemini.container = { stock: [], assets: [], container: { kind: "bag", name: "U-袋" } };
+    const first = await judge(bag.body.id);
+    const second = await judge(bag.body.id);
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    const jid = second.body.judgement_id;
+    const l = await listed();
+    assert.equal(l.unconfirmed, true);
+    assert.equal(l.pending_judgement_id, jid, "確定していないうち最新の判定");
+    const g = await got(bag.body.id);
+    assert.equal(g.unconfirmed, true);
+    assert.equal(g.pending_judgement_id, jid);
+    assert.deepEqual(g.unconfirmed_children, []);
+    assert.deepEqual((await got(room.body.id)).unconfirmed_children, [bag.body.id]);
+    assert.equal((await got(room.body.id)).unconfirmed, false, "名前のある部屋は未確定ではない");
+
+    const ok = await confirm(jid, { stock: [], assets: [], container: { kind: "bag", name: "U-袋" } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.deepEqual([(await listed()).unconfirmed, (await listed()).pending_judgement_id], [false, null]);
+    const after = await got(bag.body.id);
+    assert.deepEqual([after.unconfirmed, after.pending_judgement_id], [false, null]);
+    assert.deepEqual((await got(room.body.id)).unconfirmed_children, []);
+    // 古い未確定の判定は消さない (提案 JSON は分析用に残す)。確定済みが 1 件あれば未確定ではない
+    assert.equal(sql(`SELECT final_json FROM ai_judgements WHERE id = '${first.body.judgement_id}'`)[0].final_json, null);
+  });
+
+  test("GET /api/judgements/:id: POST judge と同じ形を返す。確定済み 409・ラベル判定 422・無い id 404", async () => {
+    const box = await post("/api/containers", { kind: "bag" });
+    const ac = await post("/api/item-types", { category: "cable", name: "R-A-C", tracking: "quantity" });
+    await post(`/api/containers/${box.body.id}/stock`, { item_type_id: ac.body.id, delta: 1 });
+    const hit = (await post("/api/assets", { model: "R-TM", serial: "R-SN" })).body.asset;
+    gemini.container = {
+      stock: [line("cable", "r-a-c", 2), line("other", "R-不明", 1)],
+      assets: [{ maker: null, model: "R-TM", serial: null, description: "箱", confidence: 0.5 }],
+      container: { kind: "bag", name: "R-袋" },
+    };
+    const r = await judge(box.body.id);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const before = gemini.requests.length;
+    const g = await call("GET", `/api/judgements/${r.body.judgement_id}`);
+    assert.equal(g.status, 200, JSON.stringify(g.body));
+    assert.deepEqual(g.body, r.body, "stock・assets・current・model・photo まで同じ");
+    assert.equal(gemini.requests.length, before, "AI を呼び直さない");
+    assert.deepEqual(g.body.assets[0].candidates.map((a) => a.id), [hit.id]);
+    assert.equal(g.body.photo.id, r.body.photo.id);
+
+    // 写真が結ばれていなければ photo は null
+    sql(`UPDATE photos SET judgement_id = NULL WHERE judgement_id = '${r.body.judgement_id}'`);
+    assert.equal((await call("GET", `/api/judgements/${r.body.judgement_id}`)).body.photo, null);
+
+    assert.equal((await confirm(r.body.judgement_id, { stock: [], assets: [] })).status, 200);
+    assert.equal((await call("GET", `/api/judgements/${r.body.judgement_id}`)).status, 409);
+    assert.equal((await call("GET", "/api/judgements/nope")).status, 404);
+    gemini.next = { maker: null, model: "R-LBL", serial: null, other_text: null, confidence: 0.5 };
+    const lbl = await fetchFresh(`${base}/api/assets/judge-label`, {
+      method: "POST",
+      headers: { "content-type": "image/jpeg", "cf-access-jwt-assertion": jwt() },
+      body: JPEG,
+    }).then((x) => x.json());
+    assert.equal((await call("GET", `/api/judgements/${lbl.judgement_id}`)).status, 422);
+    assert.equal((await call("GET", `/api/judgements/${lbl.judgement_id}`, undefined, { token: null })).status, 401);
+  });
+
+  test("未確定: 判定の無い名前の無い空の袋は未確定 (再開の判定なし)、名前を付けたら外れる", async () => {
+    const room = await post("/api/containers", { kind: "room", name: "F-部屋" });
+    const bag = await post("/api/containers", { kind: "bag", parent_id: room.body.id });
+    const box = await post("/api/containers", { kind: "box", parent_id: room.body.id });
+    const got = async (id) => (await call("GET", `/api/containers/${id}`)).body;
+    const marks = async () =>
+      Object.fromEntries((await call("GET", `/api/containers?parent=${room.body.id}`)).body.containers.map((c) => [c.id, [c.unconfirmed, c.pending_judgement_id]]));
+    assert.deepEqual(await marks(), { [bag.body.id]: [true, null], [box.body.id]: [false, null] });
+    assert.deepEqual([(await got(bag.body.id)).unconfirmed, (await got(bag.body.id)).pending_judgement_id], [true, null]);
+    assert.deepEqual((await got(room.body.id)).unconfirmed_children, [bag.body.id]);
+
+    assert.equal((await call("PATCH", `/api/containers/${bag.body.id}`, { name: "F-袋" })).status, 200);
+    assert.deepEqual((await marks())[bag.body.id], [false, null]);
+    assert.equal((await got(bag.body.id)).unconfirmed, false);
+    assert.deepEqual((await got(room.body.id)).unconfirmed_children, []);
+  });
+
   test("無いコンテナの判定は 404 で Gemini を呼ばない・未認証は 401", async () => {
     const before = gemini.requests.length;
     assert.equal((await judge("ZZZZZZ")).status, 404);

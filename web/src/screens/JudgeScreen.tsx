@@ -6,12 +6,17 @@
 // - 編集リストの上に種別・名前の欄を出し (AI の提案が初期値)、確定の本文に final.container を載せる
 // - 確定後は /app/c/<id>?created=1 へ (コンテナ画面がラベル印刷を目立たせる)
 // - 判定に失敗したときは、作ったばかりの空のコンテナを削除して撮り直せる
+//
+// `?resume=<judgement_id>` (ContainerScreen の未確定の帯「続きから確定」) のときは、撮影の段を飛ばし
+// 保存済みの提案 (GET /api/judgements/:id) で編集を出す。見た目と確定後の行き先は ?new=1 と同じ。
+// 提案が無い (404)・確定済み (409) なら、その旨を出して撮影の段に戻す
 import { useEffect, useState } from "preact/hooks";
 import {
   ApiError,
   confirmJudgement,
   deleteContainer,
   getContainer,
+  getJudgement,
   judgeContainer,
   listItemTypes,
   STOCK_CATEGORIES,
@@ -53,6 +58,9 @@ function photoOf(e: ApiError): PhotoView | null {
 export function JudgeScreen({ params, query }: ScreenProps) {
   const id = params.id;
   const isNew = query.new === "1";
+  const resume = query.resume;
+  // 新規 (?new=1) と提案からの再開 (?resume=) は同じ見た目: 種別・名前の欄・削除して撮り直す・確定後 ?created=1
+  const withContainer = isNew || !!resume;
   const load = useLoad(() => getContainer(id), id);
   const [phase, setPhase] = useState<Phase>({ s: "shoot" });
 
@@ -60,7 +68,8 @@ export function JudgeScreen({ params, query }: ScreenProps) {
     setPhase({ s: "sending" });
     try {
       const result = await judgeContainer(id, blob);
-      await settle(localId, result.photo);
+      // POST judge の応答には必ず写真が入る (null は提案から再開したときだけ)
+      if (result.photo) await settle(localId, result.photo);
       setPhase({ s: "edit", result });
     } catch (e) {
       const photo = e instanceof ApiError && e.status === 502 ? photoOf(e) : null;
@@ -103,6 +112,21 @@ export function JudgeScreen({ params, query }: ScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, isNew]);
 
+  // `?resume=`: 保存済みの提案から編集を再開する (撮り直し・AI の待ちが要らない)。
+  useEffect(() => {
+    if (!resume) return;
+    setPhase({ s: "sending" });
+    getJudgement(resume).then(
+      (result) =>
+        setPhase(
+          result.container_id === id
+            ? { s: "edit", result }
+            : { s: "shoot", note: "この判定は別のコンテナのものです。撮影して判定してください" },
+        ),
+      (e) => setPhase({ s: "shoot", note: resumeError(e) }),
+    );
+  }, [id, resume]);
+
   const [deleting, setDeleting] = useState(false);
 
   if (load.error) {
@@ -140,7 +164,7 @@ export function JudgeScreen({ params, query }: ScreenProps) {
         <>
           {phase.note && <p class="error">{phase.note}</p>}
           <Shoot onFile={onFile} />
-          {isNew && phase.note && (
+          {withContainer && phase.note && (
             <p>
               <button disabled={deleting} onClick={deleteAndReshoot}>
                 {deleting ? "削除しています…" : "削除して撮り直す"}
@@ -149,7 +173,9 @@ export function JudgeScreen({ params, query }: ScreenProps) {
           )}
         </>
       )}
-      {phase.s === "sending" && <p class="pending">送信して判定しています…</p>}
+      {phase.s === "sending" && (
+        <p class="pending">{resume ? "保存済みの提案を読み込んでいます…" : "送信して判定しています…"}</p>
+      )}
       {phase.s === "failed" && (
         <div class="pending">
           <p>送れませんでした: {phase.error}</p>
@@ -164,7 +190,7 @@ export function JudgeScreen({ params, query }: ScreenProps) {
             >
               やめる
             </button>
-            {isNew && (
+            {withContainer && (
               <button disabled={deleting} onClick={deleteAndReshoot}>
                 {deleting ? "削除しています…" : "削除して撮り直す"}
               </button>
@@ -173,7 +199,7 @@ export function JudgeScreen({ params, query }: ScreenProps) {
         </div>
       )}
       {phase.s === "edit" && (
-        <Editor containerId={id} result={phase.result} isNew={isNew} onReshoot={() => setPhase({ s: "shoot" })} />
+        <Editor containerId={id} result={phase.result} withContainer={withContainer} onReshoot={() => setPhase({ s: "shoot" })} />
       )}
 
       <p>
@@ -181,6 +207,12 @@ export function JudgeScreen({ params, query }: ScreenProps) {
       </p>
     </main>
   );
+}
+
+function resumeError(e: unknown): string {
+  if (e instanceof ApiError && e.status === 404) return "保存済みの提案が見つかりません。撮影して判定してください";
+  if (e instanceof ApiError && e.status === 409) return "この判定は確定済みです。撮り直すか、コンテナへ戻ってください";
+  return errorText(e);
 }
 
 function judgeError(e: unknown): string {
@@ -219,15 +251,15 @@ let nextKey = 0;
 function Editor({
   containerId,
   result,
-  isNew,
+  withContainer,
   onReshoot,
 }: {
   containerId: string;
   result: JudgeResult;
-  isNew: boolean;
+  withContainer: boolean;
   onReshoot: () => void;
 }) {
-  const [state, setState] = useState<EditState>(() => initialRows(result, { withContainer: isNew }));
+  const [state, setState] = useState<EditState>(() => initialRows(result, { withContainer }));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -279,7 +311,7 @@ function Editor({
     setBusy(true);
     try {
       await confirmJudgement(result.judgement_id, built.final);
-      navigate(`/app/c/${encodeURIComponent(containerId)}${isNew ? "?created=1" : ""}`);
+      navigate(`/app/c/${encodeURIComponent(containerId)}${withContainer ? "?created=1" : ""}`);
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -290,7 +322,7 @@ function Editor({
     <>
       <p class="muted">
         AI の提案です。直してから確定してください。
-        {result.photo.status === "pending" && " (写真は Flickr への送信待ちです。あとで自動で送り直します)"}
+        {result.photo?.status === "pending" && " (写真は Flickr への送信待ちです。あとで自動で送り直します)"}
       </p>
 
       {state.container && <ContainerFields row={state.container} onChange={setContainer} />}

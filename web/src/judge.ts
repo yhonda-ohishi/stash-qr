@@ -5,6 +5,14 @@
 import type { Asset, AssetLine, ConfirmFinal, ConfirmStockLine, JudgedContainer, JudgeResult, NewAsset, StockLine } from "./api";
 import { clean, type LabelForm } from "./label";
 
+/** 未確定のコンテナから進む先。提案が残っていれば編集から再開、無ければ (判定に失敗) 撮り直す。 */
+export function resumeLink(containerId: string, pendingJudgementId: string | null): { href: string; label: string } {
+  const base = `/app/c/${encodeURIComponent(containerId)}/judge`;
+  return pendingJudgementId
+    ? { href: `${base}?resume=${encodeURIComponent(pendingJudgementId)}`, label: "続きから確定" }
+    : { href: base, label: "撮影して判定" };
+}
+
 /** 数量物の編集行。`itemTypeId` があれば既存品目 (category・name は表示用)、無ければ新しい品目。 */
 export type StockRow = {
   key: string;

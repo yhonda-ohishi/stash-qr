@@ -146,6 +146,7 @@ function TopContainers() {
           {load.data.map((c) => (
             <li key={c.id}>
               <a href={`/app/c/${encodeURIComponent(c.id)}`}>{c.name || "-"}</a> <small>({c.kind})</small>
+              {c.unconfirmed && <span class="badge">未確定</span>}
               <ContainerSummary c={c} />
             </li>
           ))}

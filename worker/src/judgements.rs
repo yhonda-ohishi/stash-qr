@@ -2,6 +2,7 @@
 //!
 //! - `POST /api/containers/:id/judge` 本文はコンテナの写真。Gemini の判定と Flickr 保存を
 //!   並行で走らせ、提案 (数量物・個体候補) と既存の品目・個体との照合、今の中身を返す
+//! - `GET /api/judgements/:id` 確定していないコンテナ判定を、上と同じ形で返す (保存済みの提案から再開)
 //! - `POST /api/judgements/:id/confirm` `{ final: { stock, assets, new_assets? } }` ユーザーが直した一覧で
 //!   コンテナ直下の本数と個体の置き場所を書き換え、final_json を残す。new_assets は未登録の個体を
 //!   このコンテナに新しく登録する (品目は category・name で探し、無ければ個体管理で作る)
@@ -178,14 +179,30 @@ pub async fn judge_container(mut req: Request, ctx: Ctx) -> Result<Response> {
         Err(r) => return r,
     };
 
+    let photo = json!(j.photo);
+    match build_result(&d1, &id, &j.judgement_id, &j.model, j.proposal, photo).await? {
+        Some(v) => json(200, &v),
+        None => error(404, "container not found"),
+    }
+}
+
+/// 提案を既存の品目・個体と照合し、今の中身を添えて判定の応答 (JudgeResult) を組む。
+/// `POST /api/containers/:id/judge` と `GET /api/judgements/:id` (提案から再開) が共用する。
+/// コンテナが無ければ `None`。
+async fn build_result(
+    d1: &D1Database,
+    id: &str,
+    judgement_id: &str,
+    model: &str,
+    proposal: Value,
+    photo: Value,
+) -> Result<Option<Value>> {
     let empty = vec![];
-    let stock_lines = j
-        .proposal
+    let stock_lines = proposal
         .get("stock")
         .and_then(Value::as_array)
         .unwrap_or(&empty);
-    let asset_lines = j
-        .proposal
+    let asset_lines = proposal
         .get("assets")
         .and_then(Value::as_array)
         .unwrap_or(&empty);
@@ -234,7 +251,7 @@ pub async fn judge_container(mut req: Request, ctx: Ctx) -> Result<Response> {
     let mut asset_out = Vec::with_capacity(asset_lines.len());
     for l in asset_lines {
         let m = assets::find_matches(
-            &d1,
+            d1,
             assets::clean(l.get("model")).as_deref(),
             assets::clean(l.get("serial")).as_deref(),
         )
@@ -256,22 +273,58 @@ pub async fn judge_container(mut req: Request, ctx: Ctx) -> Result<Response> {
         asset_out.push(l);
     }
 
-    let Some(view) = containers::load_view(&d1, &id).await? else {
+    let Some(view) = containers::load_view(d1, id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "judgement_id": judgement_id,
+        "model": model,
+        "container_id": id,
+        "proposal": proposal,
+        "stock": stock,
+        "assets": asset_out,
+        "current": { "stock": view.stock, "assets": view.assets },
+        "photo": photo,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/judgements/:id   確定していないコンテナ判定を、判定の応答と同じ形で返す
+// ---------------------------------------------------------------------------
+
+/// 保存済みの提案から編集を再開する (撮り直し・AI の待ちが要らない)。
+/// 照合と今の中身は読んだ時点のもの。写真はその判定に結ばれた最新の 1 枚 (無ければ null)。
+pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
+    let Some(jid) = ctx.param("id").cloned() else {
+        return error(404, "judgement not found");
+    };
+    let d1 = db::db(&ctx)?;
+    if let Some((status, msg)) = judgement_state(&d1, &jid, "container").await? {
+        return error(status, &msg);
+    }
+    #[derive(Deserialize)]
+    struct J {
+        container_id: Option<String>,
+        model: String,
+        proposal_json: String,
+    }
+    let Some(row) = d1
+        .prepare("SELECT container_id, model, proposal_json FROM ai_judgements WHERE id = ?1")
+        .bind(&[text(&jid)])?
+        .first::<J>(None)
+        .await?
+    else {
+        return error(404, "judgement not found");
+    };
+    let Some(cid) = row.container_id else {
         return error(404, "container not found");
     };
-    json(
-        200,
-        &json!({
-            "judgement_id": j.judgement_id,
-            "model": j.model,
-            "container_id": id,
-            "proposal": j.proposal,
-            "stock": stock,
-            "assets": asset_out,
-            "current": { "stock": view.stock, "assets": view.assets },
-            "photo": j.photo,
-        }),
-    )
+    let proposal: Value = serde_json::from_str(&row.proposal_json).unwrap_or(Value::Null);
+    let photo = json!(photos::latest_for_judgement(&d1, &jid).await?);
+    match build_result(&d1, &cid, &jid, &row.model, proposal, photo).await? {
+        Some(v) => json(200, &v),
+        None => error(404, "container not found"),
+    }
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {

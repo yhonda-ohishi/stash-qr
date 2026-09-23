@@ -146,7 +146,39 @@ pub(crate) struct ListItem {
     pub(crate) child_count: i64,
     pub(crate) stock_total: i64,
     pub(crate) asset_count: i64,
+    #[serde(deserialize_with = "int_bool")]
+    pub(crate) unconfirmed: bool,
+    pub(crate) pending_judgement_id: Option<String>,
 }
+
+/// D1 は真偽値を 0 / 1 で返すので bool に直す。
+fn int_bool<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<bool, D::Error> {
+    Ok(i64::deserialize(d)? != 0)
+}
+
+/// 「未確定」のコンテナ (行の別名 `c`) を見分ける式。撮影して登録で作られたが判定を
+/// 確定せずに離れたもの:
+/// - コンテナ判定があり、確定済みが 1 件も無い (提案から再開できる)
+/// - 判定が 1 件も無く、名前の無い空の袋 (判定に失敗した仮コンテナ。撮り直す)
+const UNCONFIRMED: &str = "CASE
+       WHEN EXISTS (SELECT 1 FROM ai_judgements j
+                    WHERE j.container_id = c.id AND j.kind = 'container')
+       THEN NOT EXISTS (SELECT 1 FROM ai_judgements j
+                        WHERE j.container_id = c.id AND j.kind = 'container'
+                          AND j.final_json IS NOT NULL)
+       ELSE c.kind = 'bag' AND COALESCE(TRIM(c.name), '') = ''
+            AND NOT EXISTS (SELECT 1 FROM containers cc WHERE cc.parent_id = c.id)
+            AND NOT EXISTS (SELECT 1 FROM stock s WHERE s.container_id = c.id)
+            AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.container_id = c.id)
+     END";
+
+/// 未確定のコンテナで、再開に使う判定 (確定していないうち最新の 1 件)。確定済みがあれば NULL。
+const PENDING_JUDGEMENT: &str = "(SELECT j.id FROM ai_judgements j
+       WHERE j.container_id = c.id AND j.kind = 'container' AND j.final_json IS NULL
+         AND NOT EXISTS (SELECT 1 FROM ai_judgements f
+                         WHERE f.container_id = c.id AND f.kind = 'container'
+                           AND f.final_json IS NOT NULL)
+       ORDER BY j.at DESC, j.rowid DESC LIMIT 1)";
 
 /// `parent` 省略 = 一番上 (parent_id IS NULL)、`parent=<id>` = その直下。
 /// 存在しない parent は 404。件数・本数は直下だけ (子孫は含まない)。
@@ -168,16 +200,18 @@ pub async fn list(req: Request, ctx: Ctx) -> Result<Response> {
     }
 
     let rows = d1
-        .prepare(
+        .prepare(format!(
             "SELECT c.id, c.kind, c.name,
                (SELECT COUNT(*) FROM containers cc WHERE cc.parent_id = c.id) AS child_count,
                COALESCE((SELECT SUM(s.qty) FROM stock s WHERE s.container_id = c.id), 0) AS stock_total,
-               (SELECT COUNT(*) FROM assets a WHERE a.container_id = c.id) AS asset_count
+               (SELECT COUNT(*) FROM assets a WHERE a.container_id = c.id) AS asset_count,
+               {UNCONFIRMED} AS unconfirmed,
+               {PENDING_JUDGEMENT} AS pending_judgement_id
              FROM containers c
              WHERE (?1 IS NULL AND c.parent_id IS NULL) OR c.parent_id = ?1
              ORDER BY c.name, c.id
-             LIMIT 500",
-        )
+             LIMIT 500"
+        ))
         .bind(&[opt_text(parent.as_deref())])?
         .all()
         .await?;
@@ -317,8 +351,37 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
     let Some(view) = load_view(&d1, &id).await? else {
         return error(404, "container not found");
     };
-    // 写真は JSON のときだけ引く (load_view は判定・確定も使うので増やさない)。
+    // 写真・未確定の印は JSON のときだけ引く (load_view は判定・確定も使うので増やさない)。
     let photos = photos::list_for(&d1, Owner::Container(&id)).await?;
+    #[derive(Deserialize)]
+    struct Mark {
+        #[serde(deserialize_with = "int_bool")]
+        unconfirmed: bool,
+        pending_judgement_id: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Id {
+        id: String,
+    }
+    let marks = d1
+        .batch(vec![
+            d1.prepare(format!(
+                "SELECT {UNCONFIRMED} AS unconfirmed, {PENDING_JUDGEMENT} AS pending_judgement_id
+                 FROM containers c WHERE c.id = ?1"
+            ))
+            .bind(&[text(&id)])?,
+            d1.prepare(format!(
+                "SELECT c.id FROM containers c WHERE c.parent_id = ?1 AND {UNCONFIRMED}"
+            ))
+            .bind(&[text(&id)])?,
+        ])
+        .await?;
+    let mark = db::first_row::<Mark>(&marks[0])?;
+    let unconfirmed_children: Vec<String> = marks[1]
+        .results::<Id>()?
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
     json(
         200,
         &serde_json::json!({
@@ -332,6 +395,9 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
                 "asset_count": view.asset_count,
             },
             "photos": photos,
+            "unconfirmed": mark.as_ref().is_some_and(|m| m.unconfirmed),
+            "pending_judgement_id": mark.and_then(|m| m.pending_judgement_id),
+            "unconfirmed_children": unconfirmed_children,
         }),
     )
 }

@@ -5,6 +5,7 @@ import {
   buildFinal,
   initialRows,
   proposalContainer,
+  resumeLink,
   zeroedItems,
   type AssetRow,
   type EditState,
@@ -338,3 +339,12 @@ function newRow(key: string, over: Partial<AssetRow> = {}): AssetRow {
     ...over,
   };
 }
+
+describe("resumeLink", () => {
+  test("提案が残っていれば ?resume= で編集から再開", () => {
+    expect(resumeLink("AB12CD", "J 1")).toEqual({ href: "/app/c/AB12CD/judge?resume=J%201", label: "続きから確定" });
+  });
+  test("提案が無ければ (判定に失敗) 撮影して判定", () => {
+    expect(resumeLink("AB12CD", null)).toEqual({ href: "/app/c/AB12CD/judge", label: "撮影して判定" });
+  });
+});

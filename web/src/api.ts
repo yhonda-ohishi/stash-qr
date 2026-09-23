@@ -49,6 +49,12 @@ export type ContainerDetail = {
   totals: { stock: StockLine[]; asset_count: number };
   /** アップロード済みの写真 (新しい順に最大 20 件) */
   photos: PhotoRef[];
+  /** 撮影して登録で作ったが判定を確定していない (containers.rs `UNCONFIRMED`) */
+  unconfirmed: boolean;
+  /** 未確定のとき、提案から再開できる判定 (確定していないうち最新)。判定に失敗して無ければ null */
+  pending_judgement_id: string | null;
+  /** 直下の子のうち未確定のものの id */
+  unconfirmed_children: string[];
 };
 
 export type AssetStatus = "in_stock" | "lent" | "broken" | "disposed";
@@ -188,6 +194,10 @@ export type ContainerListItem = {
   child_count: number;
   stock_total: number;
   asset_count: number;
+  /** 撮影して登録で作ったが判定を確定していない */
+  unconfirmed: boolean;
+  /** 未確定のとき、提案から再開できる判定。無ければ null */
+  pending_judgement_id: string | null;
 };
 
 /** `parentId` 省略/undefined で一番上。存在しない parent は 404。 */
@@ -365,7 +375,7 @@ export type JudgedAsset = {
 /** AI が提案するコンテナ自体の種別・名前 (proposal.container、gemini.rs container_schema)。 */
 export type JudgedContainer = { kind: string; name: string | null };
 
-/** `POST /api/containers/:id/judge` の応答 */
+/** `POST /api/containers/:id/judge` と `GET /api/judgements/:id` の応答 */
 export type JudgeResult = {
   judgement_id: string;
   model: string;
@@ -374,7 +384,8 @@ export type JudgeResult = {
   stock: JudgedStock[];
   assets: JudgedAsset[];
   current: { stock: StockLine[]; assets: AssetLine[] };
-  photo: PhotoView;
+  /** 判定の写真。提案から再開したとき、判定に結ばれた写真が無ければ null */
+  photo: PhotoView | null;
 };
 
 /** 確定の数量物 1 行。既存品目は ID、新しい品目は category・name (無ければ worker が作る)。 */
@@ -406,6 +417,12 @@ export type ConfirmResult = {
 /** 本文は画像。AI が失敗したら 502 で、body.photo に保存済みの写真が入る。 */
 export function judgeContainer(id: string, blob: Blob): Promise<JudgeResult> {
   return request("POST", `/api/containers/${seg(id)}/judge`, blob, "image/jpeg");
+}
+
+/** 確定していないコンテナ判定を、判定の応答と同じ形で取る (保存済みの提案から再開)。
+ * 404 無い / 409 確定済み / 422 ラベル判定。照合と今の中身は読んだ時点のもの。 */
+export function getJudgement(id: string): Promise<JudgeResult> {
+  return request("GET", `/api/judgements/${seg(id)}`);
 }
 
 /** 400 形式 / 404 / 409 確定済み / 422 未知の品目・個体など。 */

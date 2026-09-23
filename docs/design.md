@@ -167,13 +167,15 @@ CREATE TABLE photos (
 ## API
 
 - `POST /api/containers` 作成（parent_id 任意）
-- `GET /api/containers?parent=` 一覧。省略は一番上、指定はその直下。直下の子の数・本数の合計・個体数を集計して返す。存在しない parent は 404
-- `GET /api/containers/:id` パンくず、直下の子、stock、assets、子孫込み合計、サムネイル
+- `GET /api/containers?parent=` 一覧。省略は一番上、指定はその直下。直下の子の数・本数の合計・個体数を集計して返す。存在しない parent は 404。各行に `unconfirmed`（下記「未確定」）と、再開に使う判定 `pending_judgement_id`（無ければ null）
+- `GET /api/containers/:id` パンくず、直下の子、stock、assets、子孫込み合計、サムネイル。自分の `unconfirmed`・`pending_judgement_id` と、直下の子のうち未確定のものの id 配列 `unconfirmed_children`。
+  未確定 = コンテナ判定があって確定済みが 1 件も無い（`pending_judgement_id` = 確定していないうち最新の判定）か、判定が 0 件で種別 bag・名前なし・子/stock/assets なし（判定に失敗した仮コンテナ。`pending_judgement_id` は null）
 - `PATCH /api/containers/:id` 名前・種別・メモ変更
 - `POST /api/containers/:id/move` `{ parent_id }` 循環チェック付き
 - `DELETE /api/containers/:id` 空の時のみ
 - `POST /api/containers/:id/stock` `{ item_type_id, delta, note }` 本数の出し入れ
 - `POST /api/containers/:id/judge` コンテナ写真 → 提案（数量物＋個体候補）。Flickr 保存を並行
+- `GET /api/judgements/:id` 確定していないコンテナ判定を `POST /api/containers/:id/judge` と同じ形で返す（保存済みの提案から再開。照合と current は読んだ時点、photo は判定に結ばれた最新の写真か null）。無い 404、確定済み 409、ラベル判定 422
 - `POST /api/judgements/:id/confirm` `{ final }` stock と assets に反映し、final_json を保存。`final.new_assets`（`{ category, name, maker, model, serial }` の配列、任意）は未登録の個体を同じ batch でこのコンテナに登録し、品目は category × name で探して無ければ個体管理で作る（既存個体と同じ (maker, model, serial) は 409、数量管理の同名品目・stock の名前行と同名は 422）
 - `POST /api/assets/judge-label` 製品ラベル写真 → メーカー・型番・シリアルの提案。Flickr 保存を並行
 - `POST /api/assets` 個体作成（ラベル判定の確定）。`item_type_id` が無ければ `category`（既定 device）× `name`（既定 = 型番）で品目を探し、無ければ作る。`judgement_id` があれば final_json を保存、`photo_id` があれば写真を個体に結び付ける。同じ (maker, model, serial) は 409
@@ -207,6 +209,8 @@ CREATE TABLE photos (
 - 撮影して登録：ホーム/コンテナ画面の「撮影して登録」(`/app/shoot`) で写真を撮ると、種別 `bag` の仮コンテナを `POST /api/containers` で先に作り、そのままコンテナ判定 (`/app/c/<id>/judge?new=1`) へ渡す（画像は URL に載せず `web/src/shoot.ts` のモジュール内変数で 1 回だけ受け渡す）。
   判定画面は `?new=1` のとき撮影の段を飛ばして自動送信し、編集リストの上に種別・名前欄（AI の proposal.container が初期値）を出し、確定の final.container でコンテナに書き込む。確定後は `?created=1` でコンテナ画面のラベル印刷ボタンを目立たせる。
   AI 判定に失敗したときは、作ったばかりの空のコンテナを「削除して撮り直す」(`DELETE`、空なので通る) で消せる
+  判定画面で確定せずに離れたコンテナは「未確定」になる。ホームの一覧とコンテナ画面の子一覧に「未確定」の印を出し、コンテナ画面の上に「判定が確定されていません」の帯と「続きから確定」（提案があるとき、`/app/c/<id>/judge?resume=<judgement_id>`）か「撮影して判定」（判定に失敗して提案が無いとき）、「削除」を出す。
+  `?resume=` の判定画面は撮影と AI の待ちを飛ばし、`GET /api/judgements/:id` の提案で `?new=1` と同じ編集画面（種別・名前欄あり、確定後 `?created=1`）を出す。提案が無い・確定済みならその旨を出して撮影の段に戻す
   QR の `/c/<id>`・`/a/<id>` は Worker の簡易 HTML のまま残し、そこから「アプリで開く」で `/app/...` へリンクする。PWA の中で QR を読んだら `/app/c/<id>`・`/app/a/<id>` へ遷移する。ルート表は `web/src/routes.tsx` の 1 か所
 - 写真なしで作る（`/app/new`、`?parent=<id>` 任意）：棚・部屋のように中身を撮る意味の無い親向け。種別（よく使う棚・部屋・箱・袋・ケース・引き出し＋自由入力、既定は棚）と名前・メモだけ入れて `POST /api/containers` で作り、`?created=1` でコンテナ画面へ（既存のラベル印刷の目立たせ表示がそのまま出る）。フォーム→本文の変換は `web/src/newContainer.ts` の純粋関数
 - 端末は Android の Chrome だけ（BarcodeDetector があるもの。無ければ読めない旨を出す）
