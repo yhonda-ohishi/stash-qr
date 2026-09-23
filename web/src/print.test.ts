@@ -1,5 +1,14 @@
-import { describe, expect, test } from "vitest";
-import { assetLabelLines, buildLabel, capLines, containerLabelLines, esc, printSucceeded } from "./print";
+import { describe, expect, test, vi } from "vitest";
+import {
+  assetLabelLines,
+  buildLabel,
+  capLines,
+  containerLabelLines,
+  esc,
+  printSucceeded,
+  responseCode,
+  sendToPrinter,
+} from "./print";
 
 describe("esc", () => {
   test("& < > \" ' をエスケープする", () => {
@@ -43,9 +52,9 @@ describe("buildLabel", () => {
     expect(xml).toContain("ほか 2 件");
     expect(xml).not.toContain(">d<");
   });
-  test("下の余白 (feed line=\"4\") の直後に cut が来る", () => {
+  test("下の余白 (feed unit=\"32\") の直後に cut が来る", () => {
     const xml = buildLabel({ kind: "c", id: "ID1", lines: ["a"] });
-    expect(xml).toMatch(/<feed line="4"\/><cut type="feed"\/>$/);
+    expect(xml).toMatch(/<feed unit="32"\/><cut type="feed"\/>$/);
   });
 });
 
@@ -117,5 +126,55 @@ describe("printSucceeded", () => {
     expect(printSucceeded('<response xmlns="..." success="false" code="SystemError"/>')).toBe(false);
     expect(printSucceeded("")).toBe(false);
     expect(printSucceeded("<html>ログイン</html>")).toBe(false);
+  });
+});
+
+describe("responseCode", () => {
+  test("code 属性を拾う", () => {
+    expect(responseCode('<response xmlns="..." success="false" code="ERROR_WAIT_EJECT"/>')).toBe("ERROR_WAIT_EJECT");
+  });
+  test("無ければ null", () => {
+    expect(responseCode('<response xmlns="..." success="true"/>')).toBeNull();
+  });
+});
+
+function okResponse(): Response {
+  return { text: () => Promise.resolve('<response success="true"/>') } as Response;
+}
+function codeResponse(code: string): Response {
+  return { text: () => Promise.resolve(`<response success="false" code="${code}"/>`) } as Response;
+}
+
+describe("sendToPrinter (取り除き待ちの自動再送)", () => {
+  const ip = "192.0.2.1"; // 文書用アドレス (実機の IP ではない)
+  const sleep = () => Promise.resolve();
+
+  test("1 回目が ERROR_WAIT_EJECT でも 2 回目で成功する", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(codeResponse("ERROR_WAIT_EJECT"))
+      .mockResolvedValueOnce(okResponse());
+    const onWaitEject = vi.fn();
+
+    await sendToPrinter(ip, "<text/>", { fetchImpl, sleep, onWaitEject });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(onWaitEject).toHaveBeenCalledTimes(1);
+  });
+
+  test("ずっと ERROR_WAIT_EJECT なら上限 (30 回) で Error", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(codeResponse("ERROR_WAIT_EJECT"));
+
+    await expect(sendToPrinter(ip, "<text/>", { fetchImpl, sleep })).rejects.toThrow(
+      "前のラベルが取り除かれませんでした",
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(30);
+  });
+
+  test("ほかのエラー code は送り直さずすぐ Error", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(codeResponse("SystemError"));
+
+    await expect(sendToPrinter(ip, "<text/>", { fetchImpl, sleep })).rejects.toThrow("SystemError");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

@@ -218,6 +218,7 @@ CREATE TABLE photos (
   ラベル = QR（`https://stash.mtamaramu.com/c/<id>` または `/a/<id>`）+ ID + 中身の上位数行。中身が変わったら同じ ID で再印刷して貼り替える。
   プリンタの IP は端末ごとに localStorage に持つ（サーバーには置かない）。
   実装：`web/src/print.ts`（esc/envelope/送信・ラベル組み立て）、設定画面は `/app/settings`。
+  下の余白は 32 ドット（上の余白と揃う）。前のラベルが出口に残っていると `ERROR_WAIT_EJECT` で断られる（紙除去検知）ので、取り除かれるまで自動で送り直す。
 
 ## 進め方（フェーズ）
 
