@@ -65,6 +65,10 @@ export function Home({ query }: ScreenProps) {
         <a href="/app/label">ラベルを撮って個体登録 (場所なし)</a>
       </section>
 
+      <section>
+        <a href="/app/settings">設定 (ラベルプリンタ)</a>
+      </section>
+
       <PendingPanel />
     </main>
   );

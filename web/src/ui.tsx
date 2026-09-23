@@ -2,6 +2,7 @@
 import { Fragment } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { ApiError, photoUrl, type Crumb, type PhotoRef } from "./api";
+import { buildLabel, getPrinterIp, sendToPrinter } from "./print";
 
 export function crumbLabel(c: { kind: string; name: string | null }): string {
   return c.name || c.kind;
@@ -40,6 +41,43 @@ export function Thumbs({ photos }: { photos: PhotoRef[] }) {
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.status ? `${e.message} (${e.status})` : e.message;
   return e instanceof Error ? e.message : String(e);
+}
+
+/** コンテナ・個体画面の「操作」欄のラベル印刷ボタン。IP 未設定なら設定画面へ誘導する。 */
+export function PrintButton({ kind, id, lines }: { kind: "c" | "a"; id: string; lines: string[] }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const ip = getPrinterIp();
+
+  if (!ip) {
+    return (
+      <a class="button" href="/app/settings">
+        ラベル印刷 (プリンタ未設定)
+      </a>
+    );
+  }
+
+  const print = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await sendToPrinter(ip, buildLabel({ kind, id, lines }));
+      setStatus("印刷しました");
+    } catch (e) {
+      setStatus(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span class="row">
+      <button disabled={busy} onClick={print}>
+        {busy ? "印刷中…" : "ラベル印刷"}
+      </button>
+      {status && <span class={status === "印刷しました" ? undefined : "error"}>{status}</span>}
+    </span>
+  );
 }
 
 export type Load<T> = { data?: T; error?: unknown; loading: boolean; reload: () => void };
