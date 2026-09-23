@@ -79,6 +79,38 @@ async fn load(d1: &D1Database, id: &str) -> Result<Option<Row>> {
         .await
 }
 
+// ---------------------------------------------------------------------------
+// コンテナ・個体の一覧 (assets::get と /c/:id, /a/:id が共用)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct PhotoRef {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) taken_at: String,
+}
+
+pub(crate) enum Owner<'a> {
+    Container(&'a str),
+    Asset(&'a str),
+}
+
+/// アップロード済み (Flickr に上がった) 写真だけを新しい順に最大 20 件返す。
+pub(crate) async fn list_for(d1: &D1Database, owner: Owner<'_>) -> Result<Vec<PhotoRef>> {
+    let (col, id) = match owner {
+        Owner::Container(id) => ("container_id", id),
+        Owner::Asset(id) => ("asset_id", id),
+    };
+    d1.prepare(format!(
+        "SELECT id, kind, taken_at FROM photos
+         WHERE {col} = ?1 AND flickr_photo_id IS NOT NULL ORDER BY taken_at DESC LIMIT 20"
+    ))
+    .bind(&[text(id)])?
+    .all()
+    .await?
+    .results::<PhotoRef>()
+}
+
 /// 本文を画像として読む。形が違えば `Err(応答)`。
 pub(crate) async fn read_image(
     req: &mut Request,

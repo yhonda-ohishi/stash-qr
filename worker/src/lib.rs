@@ -13,6 +13,7 @@ mod id;
 mod item_types;
 mod oauth1;
 mod photos;
+mod view;
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -50,6 +51,9 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/api/photos", photos::list)
         .get_async("/api/photos/:id", photos::image)
         .put_async("/api/photos/:id/image", photos::retry)
+        .get_async("/api/search", view::search)
+        .get_async("/c/:id", view::container_page)
+        .get_async("/a/:id", view::asset_page)
         .run(req, env)
         .await;
     match res {

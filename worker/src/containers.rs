@@ -17,14 +17,14 @@ use crate::{Ctx, error, json, read_object};
 const MAX_DEPTH: i64 = 64;
 
 #[derive(Deserialize, Serialize)]
-struct Container {
-    id: String,
-    parent_id: Option<String>,
-    kind: String,
-    name: Option<String>,
-    memo: Option<String>,
-    created_at: String,
-    updated_at: String,
+pub(crate) struct Container {
+    pub(crate) id: String,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) kind: String,
+    pub(crate) name: Option<String>,
+    pub(crate) memo: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
 }
 
 const COLS: &str = "id, parent_id, kind, name, memo, created_at, updated_at";
@@ -146,37 +146,37 @@ pub(crate) fn breadcrumb_sql() -> String {
     )
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub(crate) struct Crumb {
-    id: String,
-    kind: String,
-    name: Option<String>,
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) name: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
-struct Child {
-    id: String,
-    kind: String,
-    name: Option<String>,
+pub(crate) struct Child {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) name: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
-struct StockLine {
-    item_type_id: String,
-    category: String,
-    name: String,
-    qty: i64,
+pub(crate) struct StockLine {
+    pub(crate) item_type_id: String,
+    pub(crate) category: String,
+    pub(crate) name: String,
+    pub(crate) qty: i64,
 }
 
 #[derive(Deserialize, Serialize)]
-struct AssetLine {
-    id: String,
-    item_type_id: String,
-    item_name: String,
-    maker: Option<String>,
-    model: Option<String>,
-    serial: Option<String>,
-    status: String,
+pub(crate) struct AssetLine {
+    pub(crate) id: String,
+    pub(crate) item_type_id: String,
+    pub(crate) item_name: String,
+    pub(crate) maker: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) serial: Option<String>,
+    pub(crate) status: String,
 }
 
 #[derive(Deserialize)]
@@ -184,11 +184,18 @@ struct Count {
     n: i64,
 }
 
-pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
-    let Some(id) = path_id(&ctx) else {
-        return error(404, "container not found");
-    };
-    let d1 = db::db(&ctx)?;
+/// `GET /api/containers/:id` と `GET /c/:id` (HTML) が共用する取得部。
+pub(crate) struct ContainerView {
+    pub(crate) container: Container,
+    pub(crate) breadcrumb: Vec<Crumb>,
+    pub(crate) children: Vec<Child>,
+    pub(crate) stock: Vec<StockLine>,
+    pub(crate) assets: Vec<AssetLine>,
+    pub(crate) totals_stock: Vec<StockLine>,
+    pub(crate) asset_count: i64,
+}
+
+pub(crate) async fn load_view(d1: &D1Database, id: &str) -> Result<Option<ContainerView>> {
     let descendants = format!(
         "WITH RECURSIVE d(id, depth) AS (
            SELECT ?1, 0
@@ -226,25 +233,44 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
         )),
     ]
     .into_iter()
-    .map(|s| s.bind(&[text(&id)]))
+    .map(|s| s.bind(&[text(id)]))
     .collect::<Result<Vec<_>>>()?;
 
     let r = d1.batch(stmts).await?;
     let Some(container) = db::first_row::<Container>(&r[0])? else {
-        return error(404, "container not found");
+        return Ok(None);
     };
     let asset_count = db::first_row::<Count>(&r[6])?.map_or(0, |c| c.n);
+    Ok(Some(ContainerView {
+        container,
+        breadcrumb: r[1].results::<Crumb>()?,
+        children: r[2].results::<Child>()?,
+        stock: r[3].results::<StockLine>()?,
+        assets: r[4].results::<AssetLine>()?,
+        totals_stock: r[5].results::<StockLine>()?,
+        asset_count,
+    }))
+}
+
+pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
+    let Some(id) = path_id(&ctx) else {
+        return error(404, "container not found");
+    };
+    let d1 = db::db(&ctx)?;
+    let Some(view) = load_view(&d1, &id).await? else {
+        return error(404, "container not found");
+    };
     json(
         200,
         &serde_json::json!({
-            "container": container,
-            "breadcrumb": r[1].results::<Crumb>()?,
-            "children": r[2].results::<Child>()?,
-            "stock": r[3].results::<StockLine>()?,
-            "assets": r[4].results::<AssetLine>()?,
+            "container": view.container,
+            "breadcrumb": view.breadcrumb,
+            "children": view.children,
+            "stock": view.stock,
+            "assets": view.assets,
             "totals": {
-                "stock": r[5].results::<StockLine>()?,
-                "asset_count": asset_count,
+                "stock": view.totals_stock,
+                "asset_count": view.asset_count,
             },
         }),
     )
