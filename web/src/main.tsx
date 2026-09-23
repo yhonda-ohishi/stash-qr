@@ -1,4 +1,5 @@
 import { render } from "preact";
+import { initInstall } from "./install";
 import { resendAll } from "./pending";
 import { interceptLinks, matchRoute, useLocation } from "./router";
 import { routes } from "./routes";
@@ -28,6 +29,8 @@ function App() {
 
 interceptLinks(routes);
 render(<App />, document.getElementById("app")!);
+
+initInstall(window);
 
 // 前回送れなかった写真を送り直す (失敗しても起動は止めない)
 resendAll().catch(() => {});
