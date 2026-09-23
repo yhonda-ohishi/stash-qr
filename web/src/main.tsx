@@ -1,36 +1,39 @@
 import { render } from "preact";
-import { useEffect, useState } from "preact/hooks";
-
-// Access の cookie で API に届くかの確認用。いまは品目の件数だけ出す。
-type State = { kind: "loading" } | { kind: "ok"; count: number } | { kind: "error"; detail: string };
+import { resendAll } from "./pending";
+import { interceptLinks, matchRoute, useLocation } from "./router";
+import { routes } from "./routes";
+import "./style.css";
 
 function App() {
-  const [state, setState] = useState<State>({ kind: "loading" });
-
-  useEffect(() => {
-    fetch("/api/item-types", { credentials: "same-origin" })
-      .then(async (res) => {
-        if (!res.ok) return setState({ kind: "error", detail: `HTTP ${res.status}` });
-        const body = (await res.json()) as { item_types?: unknown };
-        const list = body.item_types;
-        setState(Array.isArray(list) ? { kind: "ok", count: list.length } : { kind: "error", detail: "unexpected body" });
-      })
-      .catch((e: unknown) => setState({ kind: "error", detail: String(e) }));
-  }, []);
-
+  const { path, query } = useLocation();
+  const hit = matchRoute(routes, path);
+  if (!hit) {
+    return (
+      <main>
+        <p>このページはありません。</p>
+        <a href="/app">ホームへ</a>
+      </main>
+    );
+  }
+  const Screen = hit.route.screen;
+  // パスが変わったら画面を作り直す (/app/c/A → /app/c/B で前の状態を持ち越さない)
   return (
-    <main>
-      <h1>stash-qr</h1>
-      <p>
-        {state.kind === "loading" && "読み込み中…"}
-        {state.kind === "ok" && `品目: ${state.count} 件`}
-        {state.kind === "error" && `API に届かない (${state.detail})`}
-      </p>
-    </main>
+    <>
+      {path !== "/" && path !== "/app" && path !== "/app/" && (
+        <nav class="top">
+          <a href="/app">← ホーム</a>
+        </nav>
+      )}
+      <Screen key={path} params={hit.params} query={query} />
+    </>
   );
 }
 
+interceptLinks(routes);
 render(<App />, document.getElementById("app")!);
+
+// 前回送れなかった写真を送り直す (失敗しても起動は止めない)
+resendAll().catch(() => {});
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});

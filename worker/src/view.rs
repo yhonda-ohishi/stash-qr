@@ -165,6 +165,7 @@ pub async fn container_page(_req: Request, ctx: Ctx) -> Result<Response> {
         .unwrap_or_default();
     let body = format!(
         "<p class=\"crumb\">{crumb}<strong>{name}</strong> ({kind})</p>\
+         <p><a href=\"/app/c/{id}\">アプリで開く</a></p>\
          {memo}\
          <div>{photos}</div>\
          <h2>中身</h2>{children}\
@@ -173,6 +174,7 @@ pub async fn container_page(_req: Request, ctx: Ctx) -> Result<Response> {
         crumb = breadcrumb_html(&view.breadcrumb),
         name = html_escape(&title),
         kind = html_escape(&view.container.kind),
+        id = html_escape(&view.container.id),
         memo = memo_html,
         photos = photos_html(&photo_list),
         children = children_html,
@@ -208,11 +210,13 @@ pub async fn asset_page(_req: Request, ctx: Ctx) -> Result<Response> {
     let body = format!(
         "<p class=\"crumb\">{crumb}</p>\
          <h1>{item_name}</h1>\
+         <p><a href=\"/app/a/{id}\">アプリで開く</a></p>\
          <p>メーカー: {maker}</p><p>型番: {model}</p><p>シリアル: {serial}</p>\
          <p>状態: {status}</p>{memo}\
          <div>{photos}</div>",
         crumb = crumb,
         item_name = html_escape(&a.item_name),
+        id = html_escape(&a.id),
         maker = html_escape(a.maker.as_deref().unwrap_or("-")),
         model = html_escape(a.model.as_deref().unwrap_or("-")),
         serial = html_escape(a.serial.as_deref().unwrap_or("-")),

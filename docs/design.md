@@ -200,6 +200,12 @@ CREATE TABLE photos (
 
 ## PWA（スマホの画面）
 
+- URL：画面は `/app/` の下（ホーム `/app`、コンテナ `/app/c/<id>`、個体 `/app/a/<id>`、2 スキャン移動 `/app/move`）。manifest の start_url も `/app/`。
+  QR の `/c/<id>`・`/a/<id>` は Worker の簡易 HTML のまま残し、そこから「アプリで開く」で `/app/...` へリンクする。PWA の中で QR を読んだら `/app/c/<id>`・`/app/a/<id>` へ遷移する。ルート表は `web/src/routes.tsx` の 1 か所
+- 端末は Android の Chrome だけ（BarcodeDetector があるもの。無ければ読めない旨を出す）
+- 写真は送る前に PWA で長辺 2048px 以下・JPEG 品質 0.85 に縮める（`web/src/image.ts`）
+- 送信待ちキュー（`web/src/pending.ts`、IndexedDB）：要素は `localId`（端末で振る）と、応答で分かる `photoId`。送る前に積み、応答が uploaded なら消す、pending なら photoId を書き足す。
+  photoId のあるものは起動時とホームの「送り直す」で送り直す。photoId の無いもの（応答が無かった＝サーバーに行が無い）は送り直せないので、ホームで数を見せて「捨てる」だけにする
 - QR スキャン → コンテナ画面／個体画面。QR の読み取りは Chrome の `BarcodeDetector`
 - コンテナ撮影 → 判定 → 編集リスト（数量物・個体候補）→ 確定。撮影は `getUserMedia` か `<input type="file" capture>`
 - 製品ラベル撮影 → 判定 → 編集 → 個体登録

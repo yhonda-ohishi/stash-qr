@@ -464,6 +464,20 @@ describe("photos (Flickr)", () => {
     assert.ok(!JSON.stringify(r.body).includes(up.id));
   });
 
+  test("GET /api/containers/:id の photos: 空の配列、上がった写真は id・kind・taken_at だけ", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const empty = await call("GET", `/api/containers/${box.body.id}`);
+    assert.deepEqual(empty.body.photos, []);
+
+    const r = await upload(`?kind=container&container_id=${box.body.id}`);
+    assert.equal(r.body.photo.status, "uploaded");
+    const got = await call("GET", `/api/containers/${box.body.id}`);
+    assert.equal(got.status, 200);
+    assert.deepEqual(got.body.photos.map((p) => Object.keys(p).sort()), [["id", "kind", "taken_at"]]);
+    assert.equal(got.body.photos[0].id, r.body.photo.id);
+    assert.equal(got.body.photos[0].kind, "container");
+  });
+
   test("画像は Worker が中身を返す (静的 URL を渡さない)", async () => {
     const r = await upload("?kind=label");
     const res = await image(r.body.photo.id, "z");
@@ -673,6 +687,15 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     assert.ok((await getHtml(`/a/${placed.id}`)).text.includes(`href="/c/${box.body.id}"`));
 
     assert.equal((await getHtml("/a/nope")).status, 404);
+  });
+
+  test("/c/:id と /a/:id: アプリ (PWA) で開くリンク /app/c/:id・/app/a/:id", async () => {
+    const box = await post("/api/containers", { kind: "box", name: "アプリリンク箱" });
+    const asset = (await post("/api/assets", { model: "AppLinkModel", serial: "AppLinkSerial" })).body.asset;
+    assert.ok((await getHtml(`/c/${box.body.id}`)).text.includes(`href="/app/c/${box.body.id}"`));
+    // 小文字で開いても正規化した ID でリンクする
+    assert.ok((await getHtml(`/c/${box.body.id.toLowerCase()}`)).text.includes(`href="/app/c/${box.body.id}"`));
+    assert.ok((await getHtml(`/a/${asset.id}`)).text.includes(`href="/app/a/${asset.id}"`));
   });
 
   test("検索: 品目名・型番・シリアルのヒットとパンくずのフルパス", async () => {

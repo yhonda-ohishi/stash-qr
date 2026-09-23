@@ -1,7 +1,7 @@
 {
   "name": "stash-qr",
   "short_name": "stash-qr",
-  "start_url": "/",
+  "start_url": "/app/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
