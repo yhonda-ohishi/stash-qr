@@ -384,7 +384,16 @@ export type ConfirmStockLine =
 
 /** 確定の一覧。stock はコンテナ直下の本数をぴったりこれにする (載っていない品目は 0 本)。
  * container を付けるとコンテナ自体の種別・名前も書き換わる (「撮影して登録」の新規コンテナ用)。 */
-export type ConfirmFinal = { stock: ConfirmStockLine[]; assets: string[]; container?: { kind: string; name?: string } };
+export type ConfirmFinal = {
+  stock: ConfirmStockLine[];
+  assets: string[];
+  container?: { kind: string; name?: string };
+  /** 未登録の個体をこの確定で登録する (ラベル写真なし)。品目は category・name で探し、無ければ個体管理で作る */
+  new_assets?: NewAsset[];
+};
+
+/** 確定で新しく登録する個体 1 台。空の欄は null。 */
+export type NewAsset = { category: string; name: string; maker: string | null; model: string | null; serial: string | null };
 
 /** `POST /api/judgements/:id/confirm` の応答 (確定後のコンテナ直下) */
 export type ConfirmResult = {

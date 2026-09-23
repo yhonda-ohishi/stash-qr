@@ -2,8 +2,9 @@
 //!
 //! - `POST /api/containers/:id/judge` 本文はコンテナの写真。Gemini の判定と Flickr 保存を
 //!   並行で走らせ、提案 (数量物・個体候補) と既存の品目・個体との照合、今の中身を返す
-//! - `POST /api/judgements/:id/confirm` `{ final: { stock, assets } }` ユーザーが直した一覧で
-//!   コンテナ直下の本数と個体の置き場所を書き換え、final_json を残す
+//! - `POST /api/judgements/:id/confirm` `{ final: { stock, assets, new_assets? } }` ユーザーが直した一覧で
+//!   コンテナ直下の本数と個体の置き場所を書き換え、final_json を残す。new_assets は未登録の個体を
+//!   このコンテナに新しく登録する (品目は category・name で探し、無ければ個体管理で作る)
 //!
 //! 確定は 1 回の batch で流す。1 文目 (final_json の保存) が成り立ったときだけ後続が効くよう、
 //! 後続は「final_json に今回の confirm_id が入っていること」で守る (二重確定・途中失敗を防ぐ)。
@@ -285,12 +286,14 @@ fn str_of(v: &Value, key: &str) -> Option<String> {
 
 /// コンテナ自体の種別・名前 (final.container、任意)。kind は空不可、name は trim して空なら無し。
 type ContainerFinal = (String, Option<String>);
-/// parse_final() の戻り値: stock の行 (json_each 用)・個体 ID の一覧・コンテナ自体の種別/名前。
-type ParsedFinal = (Vec<Value>, Vec<String>, Option<ContainerFinal>);
+/// parse_final() の戻り値: stock の行 (json_each 用)・個体 ID の一覧・コンテナ自体の種別/名前・
+/// 新しく登録する個体 (json_each 用)。
+type ParsedFinal = (Vec<Value>, Vec<String>, Option<ContainerFinal>, Vec<Value>);
 
 /// 本文の final を検査し、SQL に渡す stock の行 (json_each 用) と個体 ID の一覧にする。
 /// stock の各行: `{ id, category, name, qty, attrs, new_id }`。id が無い行は名前で照合し、
-/// 無ければ new_id で数量品目を作る。
+/// 無ければ new_id で数量品目を作る。new_assets の各行: `{ id, type_id, category, name, maker, model, serial }`。
+/// id は作る個体の ID、type_id は品目が無いときに作る品目の ID。
 fn parse_final(body: &Map<String, Value>) -> std::result::Result<ParsedFinal, String> {
     let Some(Value::Object(fin)) = body.get("final") else {
         return Err("final must be an object".into());
@@ -384,7 +387,34 @@ fn parse_final(body: &Map<String, Value>) -> std::result::Result<ParsedFinal, St
         }
         asset_ids.push(id.to_string());
     }
-    Ok((lines, asset_ids, container))
+
+    let new_assets = match fin.get("new_assets") {
+        None | Some(Value::Null) => &[][..],
+        Some(Value::Array(v)) => v.as_slice(),
+        Some(_) => return Err("final.new_assets must be an array".into()),
+    };
+    let mut new_lines = Vec::with_capacity(new_assets.len());
+    for (i, a) in new_assets.iter().enumerate() {
+        let Value::Object(a) = a else {
+            return Err(format!("final.new_assets[{i}] must be an object"));
+        };
+        let (Some(category), Some(name)) = (
+            assets::clean(a.get("category")),
+            assets::clean(a.get("name")),
+        ) else {
+            return Err(format!(
+                "final.new_assets[{i}] needs a non-empty category and name"
+            ));
+        };
+        new_lines.push(json!({
+            "id": new_id(ROW_ID_LEN), "type_id": new_id(ROW_ID_LEN),
+            "category": category, "name": name,
+            "maker": assets::clean(a.get("maker")),
+            "model": assets::clean(a.get("model")),
+            "serial": assets::clean(a.get("serial")),
+        }));
+    }
+    Ok((lines, asset_ids, container, new_lines))
 }
 
 /// json_each の 1 行 (`{col}.value`) を品目 ID に解決する式。id 指定ならそのまま、
@@ -413,7 +443,7 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
         Ok(b) => b,
         Err(r) => return r,
     };
-    let (lines, asset_ids, container) = match parse_final(&body) {
+    let (lines, asset_ids, container, new_assets) = match parse_final(&body) {
         Ok(v) => v,
         Err(msg) => return error(400, &msg),
     };
@@ -424,8 +454,10 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
         Some((kind, name)) => json!({ "kind": kind, "name": name }),
         None => Value::Null,
     };
+    let new_assets_json = json!(new_assets).to_string();
     let final_json = json!({
         "confirm_id": confirm_id, "stock": lines, "assets": asset_ids, "container": container_json,
+        "new_assets": new_assets,
     })
     .to_string();
     let note = format!("judgement {jid}");
@@ -438,6 +470,7 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
     // 文ごとに使う最大の番号までを渡す (SQLite は番号の最大値ぶんの値を要求する)。
     // 8・9 番目 (kind・name) は final.container が無ければ NULL のまま束ねておき、
     // container を更新する文だけがそれを使う (無ければその文自体を batch に足さない)。
+    // 10 番目 (new_assets) は 1 文目のガードと、個体を作る文 (無ければ足さない) が使う。
     let binds = [
         text(&jid),
         text(&final_json),
@@ -448,11 +481,45 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
         text(&note),
         opt_text(kind_ref),
         opt_text(name_ref),
+        text(&new_assets_json),
     ];
     let (ra, rb) = (resolve("a"), resolve("b"));
     let rs = resolve("s");
+    // new_assets の 1 行 (`{col}.value`) の値。
+    let nv = |col: &str, key: &str| format!("json_extract({col}.value, '$.{key}')");
+    let same_unit = |a: &str, b: &str| {
+        format!(
+            "{} = {} AND {} = {} AND {} = {}",
+            nv(a, "maker"),
+            nv(b, "maker"),
+            nv(a, "model"),
+            nv(b, "model"),
+            nv(a, "serial"),
+            nv(b, "serial")
+        )
+    };
+    let same_type = |t: &str, n: &str| {
+        format!(
+            "lower({t}.category) = lower({}) AND lower({t}.name) = lower({})",
+            nv(n, "category"),
+            nv(n, "name")
+        )
+    };
 
     // 1. final_json を保存する。品目・個体がすべて有効なときだけ。
+    //    new_assets は: 既存の個体・同じ確定の他の行と (maker, model, serial) が `=` で重ならない
+    //    (UNIQUE と同じく NULL は重ならない)、同名の既存品目は個体管理、stock の名前だけの行と
+    //    同名でない (2 番の文がその名前で数量品目を先に作ってしまうため)。
+    // 既存の個体 a と new_assets の行 n が同じ (maker, model, serial)。
+    let unit_na = format!(
+        "a.maker = {} AND a.model = {} AND a.serial = {}",
+        nv("n", "maker"),
+        nv("n", "model"),
+        nv("n", "serial")
+    );
+    let unit_ab = same_unit("a", "b");
+    let type_tn = same_type("t", "n");
+    let (sc, sn) = (nv("s", "category"), nv("s", "name"));
     let save = d1
         .prepare(format!(
             "UPDATE ai_judgements SET final_json = ?2
@@ -467,9 +534,19 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
                AND NOT EXISTS (SELECT 1 FROM json_each(?3) a JOIN json_each(?3) b
                                ON a.key < b.key AND {ra} = {rb})
                AND NOT EXISTS (SELECT 1 FROM json_each(?4) x
-                               WHERE NOT EXISTS (SELECT 1 FROM assets WHERE id = x.value))"
+                               WHERE NOT EXISTS (SELECT 1 FROM assets WHERE id = x.value))
+               AND NOT EXISTS (SELECT 1 FROM json_each(?10) n JOIN assets a ON {unit_na})
+               AND NOT EXISTS (SELECT 1 FROM json_each(?10) a JOIN json_each(?10) b
+                               ON a.key < b.key AND {unit_ab})
+               AND NOT EXISTS (SELECT 1 FROM json_each(?10) n JOIN item_types t ON {type_tn}
+                               WHERE t.tracking <> 'individual')
+               AND NOT EXISTS (SELECT 1 FROM json_each(?3) s JOIN json_each(?10) n
+                               ON json_extract(s.value, '$.id') IS NULL
+                              AND lower({sc}) = lower({ncat}) AND lower({sn}) = lower({nname}))",
+            ncat = nv("n", "category"),
+            nname = nv("n", "name"),
         ))
-        .bind(&binds[..4])?;
+        .bind(&binds[..10])?;
     // 2. 名前だけの行で、まだ無い品目を数量管理で作る。
     let new_types = d1
         .prepare(format!(
@@ -540,7 +617,49 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
         ))
         .bind(&binds[..5])?;
     let mut stmts = vec![save, new_types, adjust, upsert, prune, asset_moves, place];
-    // 8. final.container があれば、このコンテナ自体の種別・名前も書き換える。
+    if !new_assets.is_empty() {
+        // 8. new_assets の品目で、まだ無いものを個体管理で作る (同じ名前の行は 1 品目にまとめる)。
+        let (ncat, nname) = (nv("n", "category"), nv("n", "name"));
+        let individual_types = d1
+            .prepare(format!(
+                "INSERT INTO item_types (id, category, name, tracking, created_at)
+                 SELECT MIN({tid}), {ncat}, {nname}, 'individual', {NOW}
+                 FROM json_each(?10) n
+                 WHERE NOT EXISTS (SELECT 1 FROM item_types t WHERE {type_tn}) AND {GUARD}
+                 GROUP BY lower({ncat}), lower({nname})
+                 ON CONFLICT (category, name) DO NOTHING",
+                tid = nv("n", "type_id"),
+            ))
+            .bind(&binds[..10])?;
+        // 9. 個体を作ってこのコンテナに入れる。
+        let create_assets = d1
+            .prepare(format!(
+                "INSERT INTO assets (id, item_type_id, container_id, maker, model, serial, status, created_at, updated_at)
+                 SELECT {nid},
+                        (SELECT t.id FROM item_types t WHERE t.tracking = 'individual' AND {type_tn}
+                         ORDER BY t.id LIMIT 1),
+                        {CONTAINER}, {nm}, {nmo}, {ns}, 'in_stock', {NOW}, {NOW}
+                 FROM json_each(?10) n WHERE {GUARD}",
+                nid = nv("n", "id"),
+                nm = nv("n", "maker"),
+                nmo = nv("n", "model"),
+                ns = nv("n", "serial"),
+            ))
+            .bind(&binds[..10])?;
+        // 10. 登録を記録する (POST /api/assets と同じく asset_move / 'registered')。
+        let registered = d1
+            .prepare(format!(
+                "INSERT INTO movements (id, at, actor, kind, asset_id, item_type_id, to_id, note)
+                 SELECT lower(hex(randomblob(8))), {NOW}, ?6, 'asset_move', a.id, a.item_type_id,
+                        {CONTAINER}, 'registered'
+                 FROM json_each(?10) n JOIN assets a ON a.id = {nid}
+                 WHERE {GUARD}",
+                nid = nv("n", "id"),
+            ))
+            .bind(&binds[..10])?;
+        stmts.extend([individual_types, create_assets, registered]);
+    }
+    // 11. final.container があれば、このコンテナ自体の種別・名前も書き換える。
     if container.is_some() {
         let rename = d1
             .prepare(format!(
@@ -598,10 +717,29 @@ pub async fn confirm(mut req: Request, ctx: Ctx) -> Result<Response> {
     if !alive {
         return error(404, "container not found");
     }
+    if !new_assets.is_empty() {
+        // 失敗の理由の切り分け: new_assets のどれかが既存の個体と同じ (maker, model, serial) か。
+        #[derive(Deserialize)]
+        struct Dup {
+            dup: i64,
+        }
+        let dup = d1
+            .prepare(format!(
+                "SELECT EXISTS (SELECT 1 FROM json_each(?1) n JOIN assets a ON {unit_na}) AS dup"
+            ))
+            .bind(&[text(&new_assets_json)])?
+            .first::<Dup>(None)
+            .await?
+            .is_some_and(|d| d.dup == 1);
+        if dup {
+            return error(409, "an asset with the same maker, model and serial exists");
+        }
+    }
     error(
         422,
         "final has an unknown item type or asset, an individually tracked item type, \
-         or the same item type twice",
+         the same item type twice, or a new asset whose item type is tracked by quantity \
+         or appears twice",
     )
 }
 
@@ -615,7 +753,7 @@ mod tests {
 
     #[test]
     fn parse_final_accepts_ids_and_names() {
-        let (lines, assets, container) = parse(json!({ "final": {
+        let (lines, assets, container, new_assets) = parse(json!({ "final": {
             "stock": [
                 { "item_type_id": "T1", "qty": 3 },
                 { "category": " cable ", "name": "A-C", "qty": 0, "attrs": { "end1": "A" } },
@@ -630,11 +768,56 @@ mod tests {
         assert_eq!(lines[1]["new_id"].as_str().unwrap().len(), ROW_ID_LEN);
         assert_eq!(assets, vec!["A1", "A2"]);
         assert_eq!(container, None);
+        assert!(new_assets.is_empty());
+    }
+
+    #[test]
+    fn parse_final_accepts_new_assets() {
+        let (_, _, _, new_assets) = parse(json!({ "final": {
+            "stock": [], "assets": [],
+            "new_assets": [
+                { "category": " device ", "name": " 変換アダプタ ", "maker": " Apple ", "model": "", "serial": null },
+                { "category": "device", "name": "変換アダプタ" },
+            ],
+        }}))
+        .unwrap();
+        assert_eq!(new_assets.len(), 2);
+        let a = &new_assets[0];
+        assert_eq!(a["category"], "device");
+        assert_eq!(a["name"], "変換アダプタ");
+        assert_eq!(a["maker"], "Apple");
+        assert_eq!(a["model"], Value::Null);
+        assert_eq!(a["serial"], Value::Null);
+        assert_eq!(a["id"].as_str().unwrap().len(), ROW_ID_LEN);
+        assert_eq!(a["type_id"].as_str().unwrap().len(), ROW_ID_LEN);
+        assert_ne!(a["id"], new_assets[1]["id"]);
+        assert_eq!(new_assets[1]["maker"], Value::Null);
+
+        // null は無しと同じ
+        let (_, _, _, none) = parse(json!({ "final": {
+            "stock": [], "assets": [], "new_assets": null,
+        }}))
+        .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn parse_final_rejects_bad_new_assets() {
+        let bad = |new_assets: Value| {
+            parse(json!({ "final": { "stock": [], "assets": [], "new_assets": new_assets } }))
+                .is_err()
+        };
+        assert!(bad(json!({})));
+        assert!(bad(json!(["A1"])));
+        assert!(bad(json!([{ "category": "device" }])));
+        assert!(bad(json!([{ "category": "device", "name": "  " }])));
+        assert!(bad(json!([{ "category": " ", "name": "X" }])));
+        assert!(bad(json!([{ "name": "X" }])));
     }
 
     #[test]
     fn parse_final_accepts_container() {
-        let (_, _, container) = parse(json!({ "final": {
+        let (_, _, container, _) = parse(json!({ "final": {
             "stock": [], "assets": [],
             "container": { "kind": " box ", "name": " USB ケーブルの袋 " },
         }}))
@@ -645,7 +828,7 @@ mod tests {
         );
 
         // name は無くてもよい (trim して空も無しと同じ扱い)
-        let (_, _, only_kind) = parse(json!({ "final": {
+        let (_, _, only_kind, _) = parse(json!({ "final": {
             "stock": [], "assets": [], "container": { "kind": "bag", "name": "  " },
         }}))
         .unwrap();

@@ -22,9 +22,11 @@ import {
 import { shrinkImage } from "../image";
 import {
   assetLabel,
+  assetToStockRow,
   buildFinal,
   initialRows,
   zeroedItems,
+  type AssetDraft,
   type AssetRow,
   type ContainerRow,
   type EditState,
@@ -254,6 +256,19 @@ function Editor({
     }));
   const pickAsset = (key: string, pick: string | null) =>
     setState((s) => ({ ...s, assets: s.assets.map((a) => (a.key === key ? { ...a, pick } : a)) }));
+  const setAsset = (key: string, patch: Partial<AssetRow>) =>
+    setState((s) => ({ ...s, assets: s.assets.map((a) => (a.key === key ? { ...a, ...patch } : a)) }));
+  // 未登録の個体を本数で数える: 個体の行を消し、本数の行 (手で足した行と同じ形) を末尾に足す
+  const assetToStock = (key: string) =>
+    setState((s) => {
+      const a = s.assets.find((r) => r.key === key);
+      if (!a) return s;
+      return {
+        ...s,
+        stock: [...s.stock, assetToStockRow(a, `n${nextKey++}`)],
+        assets: s.assets.filter((r) => r.key !== key),
+      };
+    });
 
   const zeroed = zeroedItems(state.stock, result.current.stock);
 
@@ -297,7 +312,14 @@ function Editor({
       {state.assets.length ? (
         <ul class="list">
           {state.assets.map((a) => (
-            <AssetEdit key={a.key} row={a} containerId={containerId} onPick={(p) => pickAsset(a.key, p)} />
+            <AssetEdit
+              key={a.key}
+              row={a}
+              containerId={containerId}
+              onPick={(p) => pickAsset(a.key, p)}
+              onChange={(p) => setAsset(a.key, p)}
+              onToStock={() => assetToStock(a.key)}
+            />
           ))}
         </ul>
       ) : (
@@ -478,10 +500,24 @@ const MATCH_LABEL: Record<AssetRow["match"], string> = {
   new: "未登録",
 };
 
-function AssetEdit({ row, containerId, onPick }: { row: AssetRow; containerId: string; onPick: (id: string | null) => void }) {
+function AssetEdit({
+  row,
+  containerId,
+  onPick,
+  onChange,
+  onToStock,
+}: {
+  row: AssetRow;
+  containerId: string;
+  onPick: (id: string | null) => void;
+  onChange: (p: Partial<AssetRow>) => void;
+  onToStock: () => void;
+}) {
   const name = `asset-${row.key}`;
   const where = (c: string | null) =>
     c === containerId ? "このコンテナにある" : c == null ? "持ち出し中から戻す" : `${c} から移す`;
+  const setDraft = (k: keyof AssetDraft) => (e: Event) =>
+    onChange({ draft: { ...row.draft, [k]: (e.currentTarget as HTMLInputElement).value } });
   return (
     <li class="judge-row">
       <div>
@@ -491,10 +527,54 @@ function AssetEdit({ row, containerId, onPick }: { row: AssetRow; containerId: s
         {MATCH_LABEL[row.match]} · 確からしさ {pct(row.confidence)}
       </div>
       {row.match === "new" ? (
-        <p>
-          <a href={`/app/label?container=${encodeURIComponent(containerId)}`}>ラベルを撮って登録</a>{" "}
-          <small class="muted">(確定の対象外)</small>
-        </p>
+        <>
+          <div class="choices">
+            <label class="choice">
+              <input type="radio" name={name} checked={row.mode === "skip"} onChange={() => onChange({ mode: "skip" })} />
+              <span>確定しない</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name={name} checked={false} onChange={onToStock} />
+              <span>本数で数える</span>
+            </label>
+            <label class="choice">
+              <input
+                type="radio"
+                name={name}
+                checked={row.mode === "register"}
+                onChange={() => onChange({ mode: "register" })}
+              />
+              <span>個体として登録</span>
+            </label>
+          </div>
+          {row.mode === "register" && (
+            <div class="fields-form">
+              <label>
+                種類
+                <input value={row.draft.category} onInput={setDraft("category")} placeholder="device" />
+              </label>
+              <label>
+                名前
+                <input value={row.draft.name} onInput={setDraft("name")} required />
+              </label>
+              <label>
+                メーカー
+                <input value={row.draft.maker} onInput={setDraft("maker")} />
+              </label>
+              <label>
+                型番
+                <input value={row.draft.model} onInput={setDraft("model")} />
+              </label>
+              <label>
+                シリアル
+                <input value={row.draft.serial} onInput={setDraft("serial")} />
+              </label>
+            </div>
+          )}
+          <p>
+            <a href={`/app/label?container=${encodeURIComponent(containerId)}`}>ラベルを撮って登録</a>
+          </p>
+        </>
       ) : (
         <div class="choices">
           {row.candidates.map((c) => (

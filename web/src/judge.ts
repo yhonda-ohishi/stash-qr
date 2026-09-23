@@ -2,7 +2,8 @@
 //
 // 確定はコンテナ直下の本数を final.stock とぴったり同じにする (載っていない品目は 0 本)。
 // だから判定の提案に無くても今ある品目は行として出し、既定では今の本数を残す。
-import type { Asset, AssetLine, ConfirmFinal, ConfirmStockLine, JudgedContainer, JudgeResult, StockLine } from "./api";
+import type { Asset, AssetLine, ConfirmFinal, ConfirmStockLine, JudgedContainer, JudgeResult, NewAsset, StockLine } from "./api";
+import { clean, type LabelForm } from "./label";
 
 /** 数量物の編集行。`itemTypeId` があれば既存品目 (category・name は表示用)、無ければ新しい品目。 */
 export type StockRow = {
@@ -20,7 +21,11 @@ export type StockRow = {
   source: "proposal" | "current" | "added";
 };
 
-/** 個体の編集行。`pick` は確定でこのコンテナへ移す個体の ID (null = 移さない)。 */
+/** 未登録の個体を確定で登録するときの入力 (ラベル画面のフォームと同じ欄。メモは使わない)。 */
+export type AssetDraft = Omit<LabelForm, "memo">;
+
+/** 個体の編集行。`pick` は確定でこのコンテナへ移す個体の ID (null = 移さない)。
+ * match="new" の行だけ `mode` を使う: skip = 確定しない / register = `draft` で個体として登録する。 */
 export type AssetRow = {
   key: string;
   maker: string | null;
@@ -31,6 +36,8 @@ export type AssetRow = {
   match: "high" | "medium" | "choose" | "new";
   candidates: Asset[];
   pick: string | null;
+  mode: "skip" | "register";
+  draft: AssetDraft;
 };
 
 /** コンテナ自体の種別・名前の編集行。「撮影して登録」(`?new=1`) のときだけ画面に出す。 */
@@ -85,6 +92,14 @@ export function initialRows(r: JudgeResult, opts: { withContainer?: boolean } = 
     match: a.match,
     candidates: a.candidates,
     pick: (a.match === "high" || a.match === "medium") && a.candidates[0] ? a.candidates[0].id : null,
+    mode: "skip",
+    draft: {
+      category: "device",
+      name: a.model ?? a.description,
+      maker: a.maker ?? "",
+      model: a.model ?? "",
+      serial: a.serial ?? "",
+    },
   }));
   if (!opts.withContainer) return { stock, assets };
   const containerProposal = proposalContainer(r.proposal);
@@ -102,6 +117,21 @@ function currentRow(s: StockLine): StockRow {
     currentQty: s.qty,
     confidence: null,
     source: "current",
+  };
+}
+
+/** 未登録の個体の行を、本数で数える行 (手で足した行と同じ形) にする。 */
+export function assetToStockRow(row: AssetRow, key: string): StockRow {
+  return {
+    key,
+    itemTypeId: null,
+    category: "other",
+    name: row.model ?? row.description,
+    attrs: null,
+    qty: 1,
+    currentQty: 0,
+    confidence: row.confidence,
+    source: "added",
   };
 }
 
@@ -155,7 +185,27 @@ export function buildFinal(state: EditState): BuildResult {
     assets.push(a.pick);
   }
 
+  const newAssets: NewAsset[] = [];
+  const serials = new Set<string>();
+  for (const a of state.assets) {
+    if (a.match !== "new" || a.mode !== "register") continue;
+    const category = clean(a.draft.category);
+    const name = clean(a.draft.name);
+    if (!category || !name) return { ok: false, error: "個体の名前を入れてください" };
+    const maker = clean(a.draft.maker) ?? null;
+    const model = clean(a.draft.model) ?? null;
+    const serial = clean(a.draft.serial) ?? null;
+    // assets の UNIQUE (maker, model, serial) と同じく、どれかが空なら重複にならない
+    if (maker !== null && model !== null && serial !== null) {
+      const k = JSON.stringify([maker, model, serial]);
+      if (serials.has(k)) return { ok: false, error: "同じ個体を 2 行で登録しようとしています" };
+      serials.add(k);
+    }
+    newAssets.push({ category, name, maker, model, serial });
+  }
+
   const final: ConfirmFinal = { stock, assets };
+  if (newAssets.length) final.new_assets = newAssets;
   if (state.container) {
     const kind = state.container.kind.trim();
     if (!kind) return { ok: false, error: "コンテナの種別を入れてください" };
