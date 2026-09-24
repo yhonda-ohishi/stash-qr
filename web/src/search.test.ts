@@ -15,8 +15,8 @@ describe("groupByItem", () => {
     const result: SearchResult = {
       ...emptyResult(),
       stock: [
-        { item_type_id: "T1", category: "cable", item_type_name: "A-C", container_id: box.id, qty: 3, breadcrumb: [room, box] },
-        { item_type_id: "T1", category: "cable", item_type_name: "A-C", container_id: shelf.id, qty: 2, breadcrumb: [shelf] },
+        { item_type_id: "T1", category: "cable", item_type_name: "A-C", container_id: box.id, qty: 3, breadcrumb: [room, box], crop: null },
+        { item_type_id: "T1", category: "cable", item_type_name: "A-C", container_id: shelf.id, qty: 2, breadcrumb: [shelf], crop: null },
       ],
     };
     const groups = groupByItem(result);
@@ -62,13 +62,25 @@ describe("groupByItem", () => {
     expect(groups[0].places).toHaveLength(2);
   });
 
+  test("本数品目の場所ごとに crop を持ち回る (無ければ null)", () => {
+    const crop = { photo_id: "P1", box: [10, 20, 300, 400] as [number, number, number, number] };
+    const groups = groupByItem({
+      ...emptyResult(),
+      stock: [
+        { item_type_id: "T1", category: "cable", item_type_name: "A-C", container_id: box.id, qty: 3, breadcrumb: [box], crop },
+        { item_type_id: "T1", category: "cable", item_type_name: "A-C", container_id: shelf.id, qty: 1, breadcrumb: [shelf], crop: null },
+      ],
+    });
+    expect(groups[0].places.map((p) => (p.kind === "quantity" ? p.crop : undefined))).toEqual([crop, null]);
+  });
+
   test("並びは category → name", () => {
     const result: SearchResult = {
       ...emptyResult(),
       stock: [
-        { item_type_id: "T3", category: "power", item_type_name: "B", container_id: box.id, qty: 1, breadcrumb: [box] },
-        { item_type_id: "T4", category: "cable", item_type_name: "Z", container_id: box.id, qty: 1, breadcrumb: [box] },
-        { item_type_id: "T5", category: "cable", item_type_name: "A", container_id: box.id, qty: 1, breadcrumb: [box] },
+        { item_type_id: "T3", category: "power", item_type_name: "B", container_id: box.id, qty: 1, breadcrumb: [box], crop: null },
+        { item_type_id: "T4", category: "cable", item_type_name: "Z", container_id: box.id, qty: 1, breadcrumb: [box], crop: null },
+        { item_type_id: "T5", category: "cable", item_type_name: "A", container_id: box.id, qty: 1, breadcrumb: [box], crop: null },
       ],
     };
     const groups = groupByItem(result);
@@ -84,7 +96,7 @@ describe("filterGroups", () => {
   const groups = groupByItem({
     ...emptyResult(),
     stock: [
-      { item_type_id: "T1", category: "cable", item_type_name: "A-C ケーブル", container_id: box.id, qty: 3, breadcrumb: [room, box] },
+      { item_type_id: "T1", category: "cable", item_type_name: "A-C ケーブル", container_id: box.id, qty: 3, breadcrumb: [room, box], crop: null },
     ],
     assets: [
       {

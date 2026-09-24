@@ -25,6 +25,7 @@ import {
   judgeContainer,
   listItemTypes,
   STOCK_CATEGORIES,
+  type Box,
   type ItemType,
   type JudgeResult,
   type PhotoView,
@@ -46,7 +47,7 @@ import {
 import { add, discard, settle } from "../pending";
 import { navigate, type ScreenProps } from "../router";
 import { takePendingShootImage } from "../shoot";
-import { Crumbs, crumbLabel, errorText, useLoad } from "../ui";
+import { Crop, Crumbs, crumbLabel, errorText, useLoad } from "../ui";
 
 type Phase =
   | { s: "shoot"; note?: string }
@@ -292,6 +293,7 @@ function Editor({
           currentQty: 0,
           confidence: null,
           source: "added",
+          box: null,
         },
       ],
     }));
@@ -312,6 +314,8 @@ function Editor({
     });
 
   const zeroed = zeroedItems(state.stock, result.current.stock);
+  // 行の切り抜きに使う判定の写真 (送信待ちなら Crop が 409 で隠れる)
+  const photoId = result.photo?.id ?? null;
 
   const confirm = async () => {
     setError(null);
@@ -341,7 +345,7 @@ function Editor({
       {state.stock.length ? (
         <ul class="list">
           {state.stock.map((r) => (
-            <StockEdit key={r.key} row={r} onChange={(p) => setRow(r.key, p)} onRemove={() => removeRow(r.key)} />
+            <StockEdit key={r.key} row={r} photoId={photoId} onChange={(p) => setRow(r.key, p)} onRemove={() => removeRow(r.key)} />
           ))}
         </ul>
       ) : (
@@ -356,6 +360,7 @@ function Editor({
             <AssetEdit
               key={a.key}
               row={a}
+              photoId={photoId}
               containerId={containerId}
               onPick={(p) => pickAsset(a.key, p)}
               onChange={(p) => setAsset(a.key, p)}
@@ -422,12 +427,28 @@ function pct(c: number | null): string | null {
   return c == null ? null : `${Math.round(c * 100)}%`;
 }
 
-function StockEdit({ row, onChange, onRemove }: { row: StockRow; onChange: (p: Partial<StockRow>) => void; onRemove: () => void }) {
+/** 判定の行の名前の左に出す切り抜き。枠か写真が無ければ出さない。 */
+function RowCrop({ photoId, box }: { photoId: string | null; box: Box | null }) {
+  return photoId && box ? <Crop photoId={photoId} box={box} size={52} /> : null;
+}
+
+function StockEdit({
+  row,
+  photoId,
+  onChange,
+  onRemove,
+}: {
+  row: StockRow;
+  photoId: string | null;
+  onChange: (p: Partial<StockRow>) => void;
+  onRemove: () => void;
+}) {
   const [picking, setPicking] = useState(false);
   return (
     <li class="judge-row">
       {row.itemTypeId ? (
         <div class="row">
+          <RowCrop photoId={photoId} box={row.box} />
           <span class="grow">
             <small class="muted">{row.category}</small> {row.name}
           </span>
@@ -435,6 +456,7 @@ function StockEdit({ row, onChange, onRemove }: { row: StockRow; onChange: (p: P
         </div>
       ) : (
         <div class="row">
+          <RowCrop photoId={photoId} box={row.box} />
           <select value={row.category} onChange={(e) => onChange({ category: e.currentTarget.value })}>
             {STOCK_CATEGORIES.map((c) => (
               <option key={c} value={c}>
@@ -543,12 +565,14 @@ const MATCH_LABEL: Record<AssetRow["match"], string> = {
 
 function AssetEdit({
   row,
+  photoId,
   containerId,
   onPick,
   onChange,
   onToStock,
 }: {
   row: AssetRow;
+  photoId: string | null;
   containerId: string;
   onPick: (id: string | null) => void;
   onChange: (p: Partial<AssetRow>) => void;
@@ -561,8 +585,11 @@ function AssetEdit({
     onChange({ draft: { ...row.draft, [k]: (e.currentTarget as HTMLInputElement).value } });
   return (
     <li class="judge-row">
-      <div>
-        <strong>{assetLabel(row)}</strong> <small class="muted">{row.description}</small>
+      <div class="row">
+        <RowCrop photoId={photoId} box={row.box} />
+        <span class="grow">
+          <strong>{assetLabel(row)}</strong> <small class="muted">{row.description}</small>
+        </span>
       </div>
       <div class="muted">
         {MATCH_LABEL[row.match]} · 確からしさ {pct(row.confidence)}

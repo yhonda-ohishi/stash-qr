@@ -184,7 +184,9 @@ CREATE TABLE photos (
 - `GET /api/assets/:id` / `PATCH /api/assets/:id`（状態変更・メモ）
 - `POST /api/assets/:id/move` `{ container_id }`
 - `GET /api/item-types?q=` / `POST /api/item-types`
-- `GET /api/search?q=` 品目名・型番・シリアルで検索し、場所をフルパスで返す。q は任意。空なら今ある全品目 (stock・個体それぞれ 1000 行まで、超えたら `truncated: true`)。廃棄の個体は含めない
+- `GET /api/search?q=` 品目名・型番・シリアルで検索し、場所をフルパスで返す。q は任意。空なら今ある全品目 (stock・個体それぞれ 1000 行まで、超えたら `truncated: true`)。廃棄の個体は含めない。
+  本数品目の行 (品目 × コンテナ) には `crop: { photo_id, box } | null`（切り抜き）。そのコンテナの確定済みで最新のコンテナ判定の proposal_json の stock 行のうち category・name（大文字小文字無視）が一致する最初の行の box_2d と、その判定に結ばれたアップロード済みの最新の写真（「中身を空にする」で紐付けを外した写真は除く）。photo_id は photos.id（Flickr の ID・静的 URL は返さない）。個体の行には付けない。
+  引くのは CTE 1 回（コンテナごとの最新判定を `ROW_NUMBER()` で求め、`json_each` で stock 行に、photos を judgement_id で結ぶ）。索引は `migrations/0003_crop_indexes.sql`
 - `POST /api/photos?kind=&container_id=&asset_id=&taken_at=` 本文は画像そのもの。Flickr へ非公開で保存。失敗しても 201（status=pending）
 - `PUT /api/photos/:id/image` 送信待ちの写真を送り直す（送信済みなら何もしない）
 - `GET /api/photos?status=pending` 送信待ちの一覧（スマホは Flickr に入るまで画像を消さず、ここを見て送り直す）
@@ -198,8 +200,11 @@ CREATE TABLE photos (
 - 先行実装 ippoan/rust-alc-api の `alc-notify/src/extract.rs` と同じく `responseSchema` で形を固定し、`temperature` は 0。キーは URL でなくヘッダで送る。
 - 出力は JSON のみ。
 - コンテナ写真：
-  `{ "stock": [ { "category", "name", "qty", "attrs", "confidence" } ], "assets": [ { "maker", "model", "serial", "description", "confidence" } ], "container": { "kind", "name" } }`
+  `{ "stock": [ { "category", "name", "qty", "attrs", "confidence", "box_2d" } ], "assets": [ { "maker", "model", "serial", "description", "confidence", "box_2d" } ], "container": { "kind", "name" } }`
   （container はコンテナ自体の種別・名前の提案。任意で、確定の final.container として送るとコンテナに書き込む）
+  （box_2d はその行の物が写っている範囲。Gemini の標準の `[ymin, xmin, ymax, xmax]`（0〜1000 の整数、左上原点）で、同じ品目を 1 行にまとめたときはそれら全部を囲む範囲。必須ではない。
+  保存は proposal_json の中だけ（final_json・確定の形は変えない）。判定の応答（`POST /api/containers/:id/judge`・`GET /api/judgements/:id`）の stock・assets の各行では worker が検査し（4 要素の整数・0〜1000・ymin<ymax かつ xmin<xmax、`gemini.rs` の `valid_box`）、満たさなければ null にする。
+  PWA は向きを補正して縮めた JPEG を AI と Flickr に同じバイト列で送るので、枠は Flickr の写真にそのまま当てはまる）
 - ラベル写真：`{ "maker", "model", "serial", "other_text", "confidence" }`
 - ケーブルは両端の端子（A / C / micro-B / mini-B / Lightning / 3.5mm / DC など）を attrs に入れ、name は `端子1-端子2`。判断できない物は category=other, name="不明"。
 - 撮影前提（ケーブル）：1 本ずつビニタイで束ね、両端を袋の同じ辺に揃えて並べる。袋越しで可。実測テストで全問正解。
@@ -218,6 +223,10 @@ CREATE TABLE photos (
 - 写真なしで作る（`/app/new`、`?parent=<id>` 任意）：棚・部屋のように中身を撮る意味の無い親向け。種別（よく使う棚・部屋・箱・袋・ケース・引き出し＋自由入力、既定は棚）と名前・メモだけ入れて `POST /api/containers` で作り、`?created=1` でコンテナ画面へ（既存のラベル印刷の目立たせ表示がそのまま出る）。フォーム→本文の変換は `web/src/newContainer.ts` の純粋関数
 - 端末は Android の Chrome だけ（BarcodeDetector があるもの。無ければ読めない旨を出す）
 - 写真は送る前に PWA で長辺 2048px 以下・JPEG 品質 0.85 に縮める（`web/src/image.ts`）
+- 品目ごとの切り抜き：判定画面の本数・個体の各行の名前の左（box_2d と判定の写真があるとき）と、検索一覧の本数品目のカード（場所のうち crop のある最初の 1 つ）に、写真のその範囲だけを小さな正方形で出す。
+  新しい画像は保存しない。`GET /api/photos/:id?size=z` の元写真を CSS だけで拡大・ずらして切る（`web/src/ui.tsx` の `Crop`、位置計算は `web/src/crop.ts` の `cropStyle`。box の長い辺を枠に合わせ、余りは背景色）。写真が読めない（送信待ちで 409 など）ときは出さない。
+  「本数で数える」で本数に移した個体候補の行も元の枠を引き継ぐ。これから撮る判定から有効（box_2d の無い過去の判定には出ない）。
+  既知の制限：検索一覧は提案の category・name で結ぶので、確定のときに品目名を直した行（別の既存品目に付け替えた行を含む）は提案の名前と一致せず切り抜きが出ない。個体は proposal の行と登録済み個体を確実に結ぶ手がかりが無いので検索一覧には出さない
 - 送信待ちキュー（`web/src/pending.ts`、IndexedDB）：要素は `localId`（端末で振る）と、応答で分かる `photoId`。送る前に積み、応答が uploaded なら消す、pending なら photoId を書き足す。
   photoId のあるものは起動時とホームの「送り直す」で送り直す。photoId の無いもの（応答が無かった＝サーバーに行が無い）は送り直せないので、ホームで数を見せて「捨てる」だけにする
 - QR スキャン → コンテナ画面／個体画面。QR の読み取りは Chrome の `BarcodeDetector`

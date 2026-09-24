@@ -7,7 +7,7 @@ import { appPath } from "../qr";
 import { QrScanner } from "../QrScanner";
 import { navigate, type Query, type ScreenProps } from "../router";
 import { filterGroups, groupByItem, type ItemGroup } from "../search";
-import { Crumbs, errorText, useLoad } from "../ui";
+import { Crop, Crumbs, errorText, useLoad } from "../ui";
 
 /** `query` から `key` だけ外した `/app` の URL (他のキーは残す)。 */
 export function withoutParam(query: Query, key: string): string {
@@ -228,9 +228,12 @@ function ItemGroupList({ groups }: { groups: ItemGroup[] }) {
 }
 
 function ItemCard({ group }: { group: ItemGroup }) {
+  // 本数品目だけ、切り抜きのある最初の場所の 1 つを出す (個体は出さない)
+  const crop = group.places.flatMap((p) => (p.kind === "quantity" && p.crop ? [p.crop] : []))[0] ?? null;
   return (
     <li>
       <div class="row">
+        {crop && <Crop key={crop.photo_id} photoId={crop.photo_id} box={crop.box} size={56} />}
         <strong>
           {group.name} <small class="muted">({group.category})</small>
         </strong>

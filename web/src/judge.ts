@@ -2,7 +2,7 @@
 //
 // 確定はコンテナ直下の本数を final.stock とぴったり同じにする (載っていない品目は 0 本)。
 // だから判定の提案に無くても今ある品目は行として出し、既定では今の本数を残す。
-import type { Asset, AssetLine, ConfirmFinal, ConfirmStockLine, JudgedContainer, JudgeResult, NewAsset, StockLine } from "./api";
+import type { Asset, AssetLine, Box, ConfirmFinal, ConfirmStockLine, JudgedContainer, JudgeResult, NewAsset, StockLine } from "./api";
 import { clean, type LabelForm } from "./label";
 
 /** 未確定のコンテナから進む先。提案が残っていれば編集から再開、無ければ (判定に失敗) 撮り直す。 */
@@ -27,6 +27,8 @@ export type StockRow = {
   confidence: number | null;
   /** proposal = AI の提案 / current = 提案に無いが今ある / added = ユーザーが足した */
   source: "proposal" | "current" | "added";
+  /** 判定の写真の中の範囲 (切り抜き表示用)。無ければ null */
+  box: Box | null;
 };
 
 /** 未登録の個体を確定で登録するときの入力 (ラベル画面のフォームと同じ欄。メモは使わない)。 */
@@ -46,6 +48,8 @@ export type AssetRow = {
   pick: string | null;
   mode: "skip" | "register";
   draft: AssetDraft;
+  /** 判定の写真の中の範囲 (切り抜き表示用)。無ければ null */
+  box: Box | null;
 };
 
 /** コンテナ自体の種別・名前の編集行。判定画面には常に出す。 */
@@ -90,6 +94,7 @@ export function initialRows(r: JudgeResult, opts: { current?: CurrentContainer; 
       currentQty: (l.item_type_id && currentQty.get(l.item_type_id)) || 0,
       confidence: l.confidence,
       source: "proposal",
+      box: l.box_2d ?? null,
     };
   });
   for (const s of r.current.stock) {
@@ -107,6 +112,7 @@ export function initialRows(r: JudgeResult, opts: { current?: CurrentContainer; 
     candidates: a.candidates,
     pick: (a.match === "high" || a.match === "medium") && a.candidates[0] ? a.candidates[0].id : null,
     mode: "skip",
+    box: a.box_2d ?? null,
     draft: {
       category: "device",
       name: a.model ?? a.description,
@@ -135,6 +141,7 @@ function currentRow(s: StockLine): StockRow {
     currentQty: s.qty,
     confidence: null,
     source: "current",
+    box: null,
   };
 }
 
@@ -150,6 +157,8 @@ export function assetToStockRow(row: AssetRow, key: string): StockRow {
     currentQty: 0,
     confidence: row.confidence,
     source: "added",
+    // 元の個体候補の枠を引き継ぐ
+    box: row.box,
   };
 }
 

@@ -883,6 +883,7 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     assert.equal(byName.body.stock.length, 1);
     assert.equal(byName.body.stock[0].qty, 5);
     assert.deepEqual(byName.body.stock[0].breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
+    assert.equal(byName.body.stock[0].crop, null, "判定の無いコンテナの品目は crop が null");
 
     const byModel = await call("GET", "/api/search?q=SearchModelXYZ");
     assert.equal(byModel.body.assets.length, 1);
@@ -891,6 +892,7 @@ describe("閲覧ページ (/c, /a) と検索", () => {
     assert.ok(byModel.body.assets[0].category, "個体にも品目の category が付く");
     assert.ok(byModel.body.assets[0].item_type_name, "個体にも品目名が付く");
     assert.deepEqual(byModel.body.assets[0].breadcrumb.map((c) => c.id), [room.body.id, box.body.id]);
+    assert.ok(!("crop" in byModel.body.assets[0]), "個体の行には crop を付けない");
 
     const bySerial = await call("GET", "/api/search?q=SearchSerialXYZ");
     assert.equal(bySerial.body.assets.length, 1);
@@ -1007,7 +1009,7 @@ describe("コンテナ判定と確定", () => {
   const confirm = (jid, final, opts) => post(`/api/judgements/${jid}/confirm`, { final }, opts);
   const stockOf = (cid) =>
     sql(`SELECT t.category, t.name, s.qty FROM stock s JOIN item_types t ON t.id = s.item_type_id WHERE s.container_id = '${cid}' ORDER BY t.name`);
-  const line = (category, name, qty) => ({ category, name, qty, attrs: { end1: null, end2: null, length: null, color: null, braided: null }, confidence: 0.9 });
+  const line = (category, name, qty, box_2d = [100, 200, 500, 600]) => ({ category, name, qty, attrs: { end1: null, end2: null, length: null, color: null, braided: null }, confidence: 0.9, box_2d });
 
   test("判定: 指示文に登録済みの数量品目を渡し、品目・個体を照合して今の中身と返す", async () => {
     const box = await post("/api/containers", { kind: "box" });
@@ -1420,5 +1422,74 @@ describe("コンテナ判定と確定", () => {
     assert.equal((await judge(box.body.id, { token: null })).status, 401);
     assert.equal((await confirm("nope", { stock: [], assets: [] }, { token: null })).status, 401);
     assert.equal(gemini.requests.length, before);
+  });
+  test("切り抜き: 判定の行に検査済みの box_2d が載り、不正な枠は null", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    gemini.container = {
+      stock: [
+        line("cable", "X-OK", 1, [10, 20, 300, 400]),
+        line("cable", "X-REV", 1, [300, 20, 10, 400]),
+        line("cable", "X-BIG", 1, [0, 0, 1001, 10]),
+        line("cable", "X-STR", 1, ["1", 2, 3, 4]),
+        line("cable", "X-3", 1, [1, 2, 3]),
+      ],
+      assets: [
+        { maker: null, model: null, serial: null, description: "箱", confidence: 0.5, box_2d: [5, 6, 7, 8] },
+        { maker: null, model: null, serial: null, description: "謎", confidence: 0.2 },
+      ],
+      container: { kind: "box", name: "X-箱" },
+    };
+    const r = await judge(box.body.id);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.stock.map((s) => s.box_2d), [[10, 20, 300, 400], null, null, null, null]);
+    assert.deepEqual(r.body.assets.map((a) => a.box_2d), [[5, 6, 7, 8], null]);
+    const sent = gemini.requests.at(-1).body.generationConfig.responseSchema.properties;
+    assert.equal(sent.stock.items.properties.box_2d.type, "ARRAY");
+    assert.equal(sent.assets.items.properties.box_2d.type, "ARRAY");
+
+    // 再開 (GET /api/judgements/:id) でも同じく検査される
+    const again = await call("GET", `/api/judgements/${r.body.judgement_id}`);
+    assert.deepEqual(again.body.stock.map((s) => s.box_2d), [[10, 20, 300, 400], null, null, null, null]);
+  });
+
+  test("切り抜き: 確定後の検索で本数品目に crop (photos.id と枠) が付き、再確定で新しい方になる", async () => {
+    const box = await post("/api/containers", { kind: "box" });
+    const plain = await post("/api/containers", { kind: "box" });
+    const it = await post("/api/item-types", { category: "cable", name: "Y-CropCable", tracking: "quantity" });
+    await post(`/api/containers/${plain.body.id}/stock`, { item_type_id: it.body.id, delta: 1 });
+
+    gemini.container = { stock: [line("cable", "y-cropcable", 2, [100, 150, 400, 450])], assets: [], container: { kind: "box", name: "Y" } };
+    const r1 = await judge(box.body.id);
+    assert.equal((await confirm(r1.body.judgement_id, { stock: [{ item_type_id: it.body.id, qty: 2 }], assets: [] })).status, 200);
+    // 確定していない判定は使わない
+    gemini.container = { stock: [line("cable", "Y-CropCable", 2, [1, 1, 2, 2])], assets: [], container: { kind: "box", name: "Y" } };
+    await judge(box.body.id);
+
+    const rows = async (path) => {
+      const res = await call("GET", path);
+      assert.equal(res.status, 200);
+      return Object.fromEntries(res.body.stock.filter((s) => s.item_type_id === it.body.id).map((s) => [s.container_id, s.crop]));
+    };
+    for (const path of ["/api/search", "/api/search?q=Y-CropCable"]) {
+      const crops = await rows(path);
+      assert.deepEqual(crops[box.body.id], { photo_id: r1.body.photo.id, box: [100, 150, 400, 450] }, path);
+      assert.equal(crops[plain.body.id], null, `${path}: 判定の無いコンテナは null`);
+    }
+    // photo_id は内部 ID。Flickr の ID は返さない
+    const [{ flickr_photo_id }] = sql(`SELECT flickr_photo_id FROM photos WHERE id = '${r1.body.photo.id}'`);
+    assert.notEqual(r1.body.photo.id, flickr_photo_id);
+    assert.ok(!JSON.stringify((await call("GET", "/api/search")).body).includes(flickr_photo_id));
+
+    gemini.container = { stock: [line("cable", "Y-CropCable", 3, [200, 250, 600, 700])], assets: [], container: { kind: "box", name: "Y" } };
+    const r2 = await judge(box.body.id);
+    assert.equal((await confirm(r2.body.judgement_id, { stock: [{ item_type_id: it.body.id, qty: 3 }], assets: [] })).status, 200);
+    for (const path of ["/api/search", "/api/search?q=Y-CropCable"]) {
+      const crops = await rows(path);
+      assert.deepEqual(crops[box.body.id], { photo_id: r2.body.photo.id, box: [200, 250, 600, 700] }, path);
+    }
+
+    // 中身を空にして写真の紐付けを外したら、その写真の切り抜きは出さない
+    assert.equal((await post(`/api/containers/${box.body.id}/empty`, { confirm: true })).status, 200);
+    assert.equal((await rows("/api/search?q=Y-CropCable"))[box.body.id] ?? null, null);
   });
 });

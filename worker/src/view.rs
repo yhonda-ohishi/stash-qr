@@ -11,6 +11,7 @@ use worker::*;
 
 use crate::containers::{self, Crumb};
 use crate::db::{self, text};
+use crate::gemini;
 use crate::id::normalize_container_id;
 use crate::item_types::escape_like;
 use crate::photos::{self, Owner};
@@ -243,6 +244,8 @@ struct StockHit {
     item_type_name: String,
     container_id: String,
     qty: i64,
+    crop_photo_id: Option<String>,
+    crop_box: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -255,6 +258,67 @@ struct AssetHit {
     model: Option<String>,
     serial: Option<String>,
     container_id: Option<String>,
+}
+
+/// 本数品目の切り抜き (`crop`) を引く CTE。行ごとの相関サブクエリにせず 1 回だけ求める。
+/// - latest: コンテナごとの確定済みで最新のコンテナ判定
+/// - lines: その提案 (proposal_json) の stock 行。同じ category・name (大文字小文字無視) が
+///   複数あれば先頭の行
+/// - pics: 判定に結ばれたアップロード済みの最新の写真。「中身を空にする」で紐付けを外した
+///   写真 (container_id が別) は出さない
+///
+/// 本文側は `LEFT JOIN lines l ... LEFT JOIN pics p ...` で `crop_photo_id`・`crop_box` を取る。
+const CROP_CTE: &str = "
+    WITH latest AS (
+      SELECT id, container_id, proposal_json FROM (
+        SELECT id, container_id, proposal_json,
+               ROW_NUMBER() OVER (PARTITION BY container_id ORDER BY at DESC, rowid DESC) AS rn
+        FROM ai_judgements
+        WHERE kind = 'container' AND final_json IS NOT NULL AND container_id IS NOT NULL
+      ) WHERE rn = 1
+    ),
+    lines AS (
+      SELECT container_id, judgement_id, cat, name, box FROM (
+        SELECT lt.container_id, lt.id AS judgement_id,
+               lower(json_extract(j.value, '$.category')) AS cat,
+               lower(json_extract(j.value, '$.name')) AS name,
+               json_extract(j.value, '$.box_2d') AS box,
+               ROW_NUMBER() OVER (
+                 PARTITION BY lt.container_id,
+                              lower(json_extract(j.value, '$.category')),
+                              lower(json_extract(j.value, '$.name'))
+                 ORDER BY CAST(j.key AS INTEGER)
+               ) AS rn
+        FROM latest lt, json_each(lt.proposal_json, '$.stock') j
+      ) WHERE rn = 1
+    ),
+    pics AS (
+      SELECT id, judgement_id, container_id FROM (
+        SELECT ph.id, ph.judgement_id, ph.container_id,
+               ROW_NUMBER() OVER (PARTITION BY ph.judgement_id ORDER BY ph.taken_at DESC, ph.id DESC) AS rn
+        FROM photos ph JOIN latest lt ON lt.id = ph.judgement_id
+        WHERE ph.flickr_photo_id IS NOT NULL
+      ) WHERE rn = 1
+    )";
+
+/// stock s・item_types t に切り抜きの列を足す JOIN と列。
+const CROP_JOIN: &str = "
+    LEFT JOIN lines l
+      ON l.container_id = s.container_id AND l.cat = lower(t.category) AND l.name = lower(t.name)
+    LEFT JOIN pics p ON p.judgement_id = l.judgement_id AND p.container_id = s.container_id";
+const CROP_COLS: &str =
+    "p.id AS crop_photo_id, CASE WHEN p.id IS NULL THEN NULL ELSE l.box END AS crop_box";
+
+/// 切り抜きの応答 `{ photo_id, box } | null`。photo_id は photos.id (内部 ID)。
+/// Flickr の ID・静的 URL は返さない (PhotoView と同じ規約)。枠は `gemini::valid_box` で検査する。
+fn crop_of(photo_id: Option<String>, raw_box: Option<&str>) -> serde_json::Value {
+    let bx = raw_box
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+        .and_then(|b| gemini::valid_box(&b));
+    match (photo_id, bx) {
+        (Some(photo_id), Some(bx)) => serde_json::json!({ "photo_id": photo_id, "box": bx }),
+        _ => serde_json::Value::Null,
+    }
 }
 
 const SEARCH_LIMIT: &str = "50";
@@ -270,8 +334,10 @@ pub async fn search(req: Request, ctx: Ctx) -> Result<Response> {
         let limit = ALL_LIMIT + 1;
         let stock_rows = d1
             .prepare(format!(
-                "SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty
-                 FROM stock s JOIN item_types t ON t.id = s.item_type_id
+                "{CROP_CTE}
+                 SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty,
+                        {CROP_COLS}
+                 FROM stock s JOIN item_types t ON t.id = s.item_type_id {CROP_JOIN}
                  ORDER BY t.category, t.name, s.container_id LIMIT {limit}"
             ))
             .all()
@@ -301,8 +367,10 @@ pub async fn search(req: Request, ctx: Ctx) -> Result<Response> {
 
         let stock_rows = d1
             .prepare(format!(
-                "SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty
-                 FROM stock s JOIN item_types t ON t.id = s.item_type_id
+                "{CROP_CTE}
+                 SELECT s.item_type_id, t.category, t.name AS item_type_name, s.container_id, s.qty,
+                        {CROP_COLS}
+                 FROM stock s JOIN item_types t ON t.id = s.item_type_id {CROP_JOIN}
                  WHERE t.name LIKE ?1 ESCAPE '\\'
                  ORDER BY t.name, s.container_id LIMIT {SEARCH_LIMIT}"
             ))
@@ -362,6 +430,7 @@ pub async fn search(req: Request, ctx: Ctx) -> Result<Response> {
                 "container_id": r.container_id,
                 "qty": r.qty,
                 "breadcrumb": breadcrumb,
+                "crop": crop_of(r.crop_photo_id, r.crop_box.as_deref()),
             })
         })
         .collect();

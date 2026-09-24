@@ -52,6 +52,7 @@ const row = (over: Partial<StockRow>): StockRow => ({
   currentQty: 0,
   confidence: null,
   source: "added",
+  box: null,
   ...over,
 });
 
@@ -69,6 +70,25 @@ describe("initialRows", () => {
     expect(s.stock).toHaveLength(2);
     expect(s.stock[0]).toMatchObject({ itemTypeId: "T1", name: "USB-C", qty: 3, currentQty: 2, source: "proposal" });
     expect(s.stock[1]).toMatchObject({ itemTypeId: null, name: "65W", qty: 1, currentQty: 0, attrs: { color: "white" } });
+  });
+
+  test("box_2d を行の box に引き継ぐ。無い・null は null、今あるだけの行は null", () => {
+    const s = initialRows(
+      result({
+        stock: [
+          { category: "cable", name: "A", qty: 1, attrs: null, confidence: 1, item_type_id: null, box_2d: [1, 2, 3, 4] },
+          { category: "cable", name: "B", qty: 1, attrs: null, confidence: 1, item_type_id: null, box_2d: null },
+          { category: "cable", name: "C", qty: 1, attrs: null, confidence: 1, item_type_id: null },
+        ],
+        assets: [
+          { maker: null, model: null, serial: null, description: "x", confidence: 1, match: "new", candidates: [], box_2d: [5, 6, 7, 8] },
+          { maker: null, model: null, serial: null, description: "y", confidence: 1, match: "new", candidates: [] },
+        ],
+        current: { stock: [{ item_type_id: "T9", category: "cable", name: "Z", qty: 1 }], assets: [] },
+      }),
+    );
+    expect(s.stock.map((r) => r.box)).toEqual([[1, 2, 3, 4], null, null, null]);
+    expect(s.assets.map((r) => r.box)).toEqual([[5, 6, 7, 8], null]);
   });
 
   test("今あって提案に無い品目は、今の本数を残す行として足す", () => {
@@ -237,6 +257,7 @@ describe("buildFinal", () => {
       pick,
       mode: "skip" as const,
       draft: { category: "", name: "", maker: "", model: "", serial: "" },
+      box: null,
     });
     const ok = buildFinal({ stock: [], assets: [a("1", "A1"), a("2", null), a("3", "A2")] });
     expect(ok).toEqual({ ok: true, final: { stock: [], assets: ["A1", "A2"] } });
@@ -366,8 +387,13 @@ describe("未登録の個体", () => {
       currentQty: 0,
       confidence: 0.4,
       source: "added",
+      box: null,
     });
     expect(assetToStockRow(newRow("1", { model: "MD820", description: "x" }), "n1").name).toBe("MD820");
+  });
+
+  test("assetToStockRow: 元の個体候補の枠 (box) を引き継ぐ", () => {
+    expect(assetToStockRow(newRow("1", { box: [10, 20, 300, 400] }), "n2").box).toEqual([10, 20, 300, 400]);
   });
 });
 
@@ -384,6 +410,7 @@ function newRow(key: string, over: Partial<AssetRow> = {}): AssetRow {
     pick: null,
     mode: "skip",
     draft: { category: "device", name: "X", maker: "", model: "", serial: "" },
+    box: null,
     ...over,
   };
 }

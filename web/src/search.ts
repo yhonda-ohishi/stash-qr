@@ -1,6 +1,6 @@
 // ホームの検索モード (全品目の一覧) が使う純粋関数。通信・DOM は Home.tsx 側。
 // GET /api/search の応答 (stock 行 × assets 行) を品目ごとにまとめ、文字での絞り込みを行う。
-import type { Crumb, SearchResult } from "./api";
+import type { Crop, Crumb, SearchResult } from "./api";
 import { crumbLabel } from "./ui";
 
 /** 本数品目の置き場所 1 か所ぶん。 */
@@ -9,6 +9,8 @@ export type QuantityPlace = {
   containerId: string;
   breadcrumb: Crumb[];
   qty: number;
+  /** その場所の切り抜き (無ければ null) */
+  crop: Crop | null;
 };
 
 /** 個体管理の品目の個体 1 台ぶん。 */
@@ -42,7 +44,7 @@ export function groupByItem(result: SearchResult): ItemGroup[] {
   for (const s of result.stock) {
     const g = groupFor(groups, s.item_type_id, s.category, s.item_type_name, "quantity");
     g.total += s.qty;
-    g.places.push({ kind: "quantity", containerId: s.container_id, breadcrumb: s.breadcrumb, qty: s.qty });
+    g.places.push({ kind: "quantity", containerId: s.container_id, breadcrumb: s.breadcrumb, qty: s.qty, crop: s.crop });
   }
   for (const a of result.assets) {
     const g = groupFor(groups, a.item_type_id, a.category, a.item_type_name, "individual");

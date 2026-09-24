@@ -242,6 +242,7 @@ async fn build_result(
                 .and_then(|h| h.item_type_id.clone());
             if let Some(o) = l.as_object_mut() {
                 o.insert("item_type_id".into(), json!(hit));
+                clean_box(o);
             }
             l
         })
@@ -269,6 +270,7 @@ async fn build_result(
         if let Some(o) = l.as_object_mut() {
             o.insert("match".into(), json!(level));
             o.insert("candidates".into(), json!(candidates));
+            clean_box(o);
         }
         asset_out.push(l);
     }
@@ -325,6 +327,12 @@ pub async fn get(_req: Request, ctx: Ctx) -> Result<Response> {
         Some(v) => json(200, &v),
         None => error(404, "container not found"),
     }
+}
+
+/// 行の `box_2d` を検査し、不正 (または無い) なら null にする。
+fn clean_box(o: &mut Map<String, Value>) {
+    let b = o.get("box_2d").and_then(gemini::valid_box);
+    o.insert("box_2d".into(), json!(b));
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
