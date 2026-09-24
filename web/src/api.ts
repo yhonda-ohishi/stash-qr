@@ -103,6 +103,12 @@ export type ItemType = {
 /** `POST /api/containers/:id/stock` の応答 */
 export type StockDeltaResult = { container_id: string; item_type_id: string; qty: number; movement_id: string };
 
+/** 写真の中の範囲。Gemini の box_2d = `[ymin, xmin, ymax, xmax]` (0〜1000、左上原点)。 */
+export type Box = [number, number, number, number];
+
+/** 本数品目の切り抜き。そのコンテナの確定済みで最新の判定の写真 (photos.id) と枠。 */
+export type Crop = { photo_id: string; box: Box };
+
 /** `GET /api/search` (view.rs `search`) */
 export type SearchStockHit = {
   item_type_id: string;
@@ -111,6 +117,8 @@ export type SearchStockHit = {
   container_id: string;
   qty: number;
   breadcrumb: Crumb[];
+  /** 判定が無い・枠が無い・写真が送信待ちなら null */
+  crop: Crop | null;
 };
 export type SearchAssetHit = {
   id: string;
@@ -365,6 +373,8 @@ export type JudgedStock = {
   attrs: Record<string, unknown> | null;
   confidence: number;
   item_type_id: string | null;
+  /** 写っている範囲 (worker が検査済み。不正・無しは null) */
+  box_2d?: Box | null;
 };
 
 /** 既存の個体との照合。high = シリアル一致、medium = 型番一致 1 件、choose = 複数、new = 無し。 */
@@ -379,6 +389,8 @@ export type JudgedAsset = {
   confidence: number;
   match: AssetMatch;
   candidates: Asset[];
+  /** 写っている範囲 (worker が検査済み。不正・無しは null) */
+  box_2d?: Box | null;
 };
 
 /** AI が提案するコンテナ自体の種別・名前 (proposal.container、gemini.rs container_schema)。 */

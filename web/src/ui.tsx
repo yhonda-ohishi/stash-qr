@@ -2,7 +2,8 @@
 import { Camera, House, ScanLine, Search, Settings } from "lucide-preact";
 import { Fragment } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { ApiError, photoUrl, type Crumb, type PhotoRef } from "./api";
+import { ApiError, photoUrl, type Box, type Crumb, type PhotoRef } from "./api";
+import { cropStyle } from "./crop";
 import { buildLabel, getPrinterIp, sendToPrinter } from "./print";
 import type { Query } from "./router";
 
@@ -37,6 +38,37 @@ export function Thumbs({ photos }: { photos: PhotoRef[] }) {
         </a>
       ))}
     </div>
+  );
+}
+
+/** 写真 (`GET /api/photos/:id?size=z`) の `box` の範囲だけを `size` px の正方形に出す。
+ * 画像は切らず CSS で拡大・ずらすだけ。読めない (送信待ちで 409 など) ときは部品ごと隠す。 */
+export function Crop({ photoId, box, size }: { photoId: string; box: Box; size: number }) {
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setNatural(null);
+    setFailed(false);
+  }, [photoId]);
+  if (failed) return null;
+  const st = natural && cropStyle(box, natural.w, natural.h, size);
+  return (
+    <span class="crop" style={{ width: `${size}px`, height: `${size}px` }} aria-hidden="true">
+      <span class="crop-clip" style={st ? { width: `${st.clip.width}px`, height: `${st.clip.height}px` } : undefined}>
+        <img
+          src={photoUrl(photoId, "z")}
+          alt=""
+          loading="lazy"
+          style={
+            st
+              ? { width: `${st.img.width}px`, height: `${st.img.height}px`, left: `${st.img.left}px`, top: `${st.img.top}px` }
+              : { visibility: "hidden" }
+          }
+          onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+          onError={() => setFailed(true)}
+        />
+      </span>
+    </span>
   );
 }
 

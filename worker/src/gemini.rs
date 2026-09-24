@@ -181,6 +181,8 @@ pub const CONTAINER_PROMPT: &str = "\
 - container: 写っている袋・箱・棚など入れ物自体について、種別 (kind) と、中身が分かる短い日本語の名前
   (name。例: USB ケーブルの袋) を付けてください。container は必ず返してください。入れ物がはっきり写っていないときは
   kind を other にし、name は中身から付けてください
+- stock と assets の各行に、その物が写っている範囲を box_2d [ymin, xmin, ymax, xmax] (0〜1000 の整数、左上原点) で
+  付けてください。同じ品目を 1 行にまとめたときは、それら全部を囲む範囲にしてください
 ケーブルは 1 本ずつ束ねて両端を同じ辺に揃えてあります。端子の形を見て数えてください。";
 
 /// 指示文に登録済みの数量品目を添える。同じ物に同じ名前を付けさせ、表記揺れで品目が増えるのを防ぐ。
@@ -197,8 +199,30 @@ pub fn container_prompt(known: &[(String, String)]) -> String {
     p
 }
 
+/// 品目の写っている範囲。Gemini の標準の `box_2d` = `[ymin, xmin, ymax, xmax]` (0〜1000、左上原点)。
+/// 先行実装は ippoan/rust-alc-api の `crates/alc-notify/src/redact.rs`。
+pub const BOX_MAX: i64 = 1000;
+
+/// `box_2d` を検査する。4 要素の整数・0〜1000・ymin<ymax かつ xmin<xmax でなければ `None`
+/// (Gemini の出力は信用しない。不正な枠は null として扱う)。
+pub fn valid_box(v: &Value) -> Option<[i64; 4]> {
+    let a = v.as_array()?;
+    if a.len() != 4 {
+        return None;
+    }
+    let mut b = [0i64; 4];
+    for (o, x) in b.iter_mut().zip(a) {
+        *o = x.as_i64()?;
+        if !(0..=BOX_MAX).contains(o) {
+            return None;
+        }
+    }
+    (b[0] < b[2] && b[1] < b[3]).then_some(b)
+}
+
 pub fn container_schema() -> Value {
     let s = json!({ "type": "STRING", "nullable": true });
+    let bx = json!({ "type": "ARRAY", "items": { "type": "INTEGER" } });
     json!({
         "type": "OBJECT",
         "properties": {
@@ -218,7 +242,8 @@ pub fn container_schema() -> Value {
                                 "braided": { "type": "BOOLEAN", "nullable": true }
                             }
                         },
-                        "confidence": { "type": "NUMBER" }
+                        "confidence": { "type": "NUMBER" },
+                        "box_2d": bx
                     },
                     "required": ["category", "name", "qty", "confidence"]
                 }
@@ -230,7 +255,8 @@ pub fn container_schema() -> Value {
                     "properties": {
                         "maker": s, "model": s, "serial": s,
                         "description": { "type": "STRING" },
-                        "confidence": { "type": "NUMBER" }
+                        "confidence": { "type": "NUMBER" },
+                        "box_2d": bx
                     },
                     "required": ["description", "confidence"]
                 }
@@ -278,6 +304,51 @@ mod tests {
         let container_required = s["properties"]["container"]["required"].as_array().unwrap();
         assert!(container_required.contains(&json!("kind")));
         assert!(container_required.contains(&json!("name")));
+    }
+
+    #[test]
+    fn container_schema_asks_for_box_2d() {
+        let s = container_schema();
+        for list in ["stock", "assets"] {
+            let items = &s["properties"][list]["items"];
+            assert_eq!(items["properties"]["box_2d"]["type"], "ARRAY");
+            assert_eq!(items["properties"]["box_2d"]["items"]["type"], "INTEGER");
+            // 枠が無くても判定は通す (required に入れない)。
+            assert!(
+                !items["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("box_2d"))
+            );
+        }
+        assert!(CONTAINER_PROMPT.contains("box_2d [ymin, xmin, ymax, xmax]"));
+    }
+
+    #[test]
+    fn valid_box_checks_shape_range_and_order() {
+        assert_eq!(
+            valid_box(&json!([10, 20, 300, 400])),
+            Some([10, 20, 300, 400])
+        );
+        assert_eq!(
+            valid_box(&json!([0, 0, 1000, 1000])),
+            Some([0, 0, 1000, 1000])
+        );
+        // 範囲外
+        assert_eq!(valid_box(&json!([-1, 0, 10, 10])), None);
+        assert_eq!(valid_box(&json!([0, 0, 1001, 10])), None);
+        // 順序が逆・幅 0
+        assert_eq!(valid_box(&json!([300, 20, 10, 400])), None);
+        assert_eq!(valid_box(&json!([10, 400, 300, 20])), None);
+        assert_eq!(valid_box(&json!([10, 20, 10, 400])), None);
+        // 要素数違い
+        assert_eq!(valid_box(&json!([10, 20, 300])), None);
+        assert_eq!(valid_box(&json!([10, 20, 300, 400, 5])), None);
+        // 数値でない・小数・配列でない
+        assert_eq!(valid_box(&json!(["10", 20, 300, 400])), None);
+        assert_eq!(valid_box(&json!([10.5, 20, 300, 400])), None);
+        assert_eq!(valid_box(&json!(null)), None);
+        assert_eq!(valid_box(&json!({ "ymin": 10 })), None);
     }
 
     #[test]

@@ -151,6 +151,24 @@ input.qty {
   object-fit: cover;
   border-radius: 4px;
 }
+.crop {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--line);
+  border-radius: 4px;
+  vertical-align: middle;
+}
+.crop-clip {
+  position: relative;
+  overflow: hidden;
+}
+.crop-clip img {
+  position: absolute;
+  max-width: none;
+}
 .scanner video {
   width: 100%;
   max-height: 60vh;
